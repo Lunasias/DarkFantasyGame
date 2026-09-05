@@ -8,6 +8,8 @@ import { playerProfiles } from "@/db/schema/player-profiles";
 import { characters } from "@/db/schema/characters";
 import { characterInventory } from "@/db/schema/character-inventory";
 import { gameSessions } from "@/db/schema/game-sessions";
+import { rooms } from "@/db/schema/rooms";
+import { roomPlayers } from "@/db/schema/room-players";
 import { items } from "@/db/schema/items";
 import { shops } from "@/db/schema/shops";
 import { shopInventory } from "@/db/schema/shop-inventory";
@@ -23,6 +25,7 @@ import {
   persistShopBuy,
   persistShopSell,
 } from "@/db/game-store";
+import { GameplayService } from "@/server/game/gameplay";
 
 const ENABLED = !!process.env.DATABASE_URL && !process.env.CI;
 let pool: Pool;
@@ -153,4 +156,48 @@ describe.runIf(ENABLED)("Phase 11 persistence (real Neon)", () => {
     expect(state2.combat?.status).toBe("completed");
     expect(state2.combat?.winner).toBe(characterId);
   }, 30000);
+
+  describe("gameplay service", () => {
+    it("rejects unauthorized/non-owner actions and supports buy + idempotent reward", async () => {
+      const owner = await createChar("gp_owner");
+      const other = await createChar("gp_other");
+      const svc = new GameplayService(db);
+
+      const buy = await svc.buy(owner.userId, owner.characterId, seededShop, "grave_dust", 2);
+      expect(buy.cost).toBe(16);
+      await expect(
+        svc.buy(other.userId, owner.characterId, seededShop, "grave_dust", 1),
+      ).rejects.toThrow(); // IDOR: other does not own the character
+
+      const r1 = await svc.applyReward(owner.userId, owner.characterId, {
+        rewardKey: "combat:gp", experience: 100, gold: 50, items: [],
+      });
+      const r2 = await svc.applyReward(owner.userId, owner.characterId, {
+        rewardKey: "combat:gp", experience: 100, gold: 50, items: [],
+      });
+      expect(r1.alreadyClaimed).toBe(false);
+      expect(r2.alreadyClaimed).toBe(true);
+    }, 30000);
+
+    it("rejects a wrong-player action and rejects non-member access", async () => {
+      const host = await createChar("gp_host");
+      const guest = await createChar("gp_guest");
+      const outsider = await createChar("gp_out");
+
+      const roomId = createId();
+      const sessionId = createId();
+      sessionIds.push(sessionId);
+      await db.insert(rooms).values({ id: roomId, roomCode: "GPGP01", name: "GP", hostUserId: host.userId, status: "in_game", maxPlayers: 4 });
+      await db.insert(roomPlayers).values({ id: createId(), roomId, userId: host.userId, slot: 0, ready: true, isHost: true, connected: true });
+      await db.insert(roomPlayers).values({ id: createId(), roomId, userId: guest.userId, slot: 1, ready: true, isHost: false, connected: true });
+      await db.insert(gameSessions).values({ id: sessionId, roomId, phase: "active", currentTurnNumber: 1, stateVersion: 0 });
+
+      const svc = new GameplayService(db);
+      // turn 1 → active player is slot 0 (host)
+      await expect(svc.move(guest.userId, sessionId, "B")).rejects.toThrow(); // wrong player
+      await expect(svc.move(outsider.userId, sessionId, "B")).rejects.toThrow(); // non-member
+      const ok = await svc.move(host.userId, sessionId, "B");
+      expect(ok.nodeId).toBe("B");
+    }, 30000);
+  });
 });
