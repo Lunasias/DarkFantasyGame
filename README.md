@@ -1,36 +1,55 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# DarkFantasyGame
 
-## Getting Started
+An original, browser-based, online dark-fantasy **turn-based RPG board game**.
+Strategic, cooperative and competitive multiplayer with persistent progression.
 
-First, run the development server:
+Built with **Next.js 16** (App Router, React 19, TypeScript), **Tailwind CSS**,
+**Three.js / React Three Fiber / Drei**, **Drizzle ORM** on **Neon PostgreSQL**,
+**Zod**, **Vitest** and **Playwright**, deployed on **Vercel**.
+
+## Project status
+
+Currently in **Phase 0 — Foundation**. See [`docs/PROJECT_STATE.md`](./docs/PROJECT_STATE.md)
+for the live status and [`docs/ROADMAP.md`](./docs/ROADMAP.md) for the full plan.
+
+## Getting started
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+pnpm install
+pnpm dev        # http://localhost:3000
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Commands
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+| Command              | Description                          |
+| -------------------- | ------------------------------------ |
+| `pnpm dev`           | Start the dev server                 |
+| `pnpm build`         | Production build (Turbopack)         |
+| `pnpm start`         | Start the production server          |
+| `pnpm lint`          | Run ESLint                           |
+| `pnpm typecheck`     | Run `tsc --noEmit`                   |
+| `pnpm test`          | Run Vitest (unit)                    |
+| `pnpm test:e2e`      | Run Playwright (e2e, needs browsers) |
+| `pnpm db:generate`   | Generate Drizzle migration SQL       |
+| `pnpm db:migrate`    | Apply migrations to Neon             |
+| `pnpm db:push`       | Push schema directly (dev)           |
+| `pnpm db:studio`     | Open Drizzle Studio                  |
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Configuration
 
-## Learn More
+Copy `.env.example` to `.env.local` and fill in your own values. Real secrets
+are git-ignored.
 
-To learn more about Next.js, take a look at the following resources:
+## Architecture
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+See [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) and
+[`docs/DATABASE.md`](./docs/DATABASE.md).
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+- `src/game` — framework-independent game engine (domain rules).
+- `src/game/room` — lobby domain + room service.
+- `src/db` — Drizzle + Neon client and schema.
+- `src/server` — server/realtime transport seam.
+- `src/app` — Next.js routes.
+- `tests` — unit tests.
 
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+All game mechanics, names, data and art are **original IP**.

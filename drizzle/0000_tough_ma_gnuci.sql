@@ -1,0 +1,105 @@
+CREATE TYPE "public"."room_status" AS ENUM('waiting', 'ready', 'in_progress', 'closed');--> statement-breakpoint
+CREATE TYPE "public"."session_phase" AS ENUM('lobby', 'active', 'finished');--> statement-breakpoint
+CREATE TABLE "users" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"email" text NOT NULL,
+	"display_name" text,
+	"avatar_url" text,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "users_email_unique" UNIQUE("email")
+);
+--> statement-breakpoint
+CREATE TABLE "player_profiles" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"user_id" uuid NOT NULL,
+	"player_name" text NOT NULL,
+	"level" integer DEFAULT 1 NOT NULL,
+	"total_gold" integer DEFAULT 0 NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE "characters" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"profile_id" uuid NOT NULL,
+	"name" text NOT NULL,
+	"archetype" text DEFAULT 'adventurer' NOT NULL,
+	"level" integer DEFAULT 1 NOT NULL,
+	"health" integer NOT NULL,
+	"max_health" integer NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE "rooms" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"name" text NOT NULL,
+	"host_user_id" uuid NOT NULL,
+	"status" "room_status" DEFAULT 'waiting' NOT NULL,
+	"max_players" integer DEFAULT 4 NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE "room_players" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"room_id" uuid NOT NULL,
+	"user_id" uuid NOT NULL,
+	"ready" boolean DEFAULT false NOT NULL,
+	"is_host" boolean DEFAULT false NOT NULL,
+	"joined_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE "game_sessions" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"room_id" uuid,
+	"phase" "session_phase" DEFAULT 'lobby' NOT NULL,
+	"current_turn_number" integer DEFAULT 0 NOT NULL,
+	"config" jsonb,
+	"started_at" timestamp with time zone,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE "turns" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"game_session_id" uuid NOT NULL,
+	"turn_number" integer NOT NULL,
+	"player_id" uuid,
+	"state" jsonb,
+	"ended_at" timestamp with time zone,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE "game_events" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"game_session_id" uuid NOT NULL,
+	"type" text NOT NULL,
+	"sequence" integer DEFAULT 0 NOT NULL,
+	"payload" jsonb,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
+ALTER TABLE "player_profiles" ADD CONSTRAINT "player_profiles_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "characters" ADD CONSTRAINT "characters_profile_id_player_profiles_id_fk" FOREIGN KEY ("profile_id") REFERENCES "public"."player_profiles"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "rooms" ADD CONSTRAINT "rooms_host_user_id_users_id_fk" FOREIGN KEY ("host_user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "room_players" ADD CONSTRAINT "room_players_room_id_rooms_id_fk" FOREIGN KEY ("room_id") REFERENCES "public"."rooms"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "room_players" ADD CONSTRAINT "room_players_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "game_sessions" ADD CONSTRAINT "game_sessions_room_id_rooms_id_fk" FOREIGN KEY ("room_id") REFERENCES "public"."rooms"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "turns" ADD CONSTRAINT "turns_game_session_id_game_sessions_id_fk" FOREIGN KEY ("game_session_id") REFERENCES "public"."game_sessions"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "game_events" ADD CONSTRAINT "game_events_game_session_id_game_sessions_id_fk" FOREIGN KEY ("game_session_id") REFERENCES "public"."game_sessions"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+CREATE INDEX "users_email_idx" ON "users" USING btree ("email");--> statement-breakpoint
+CREATE INDEX "player_profiles_user_id_idx" ON "player_profiles" USING btree ("user_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "player_profiles_user_id_unique" ON "player_profiles" USING btree ("user_id");--> statement-breakpoint
+CREATE INDEX "characters_profile_id_idx" ON "characters" USING btree ("profile_id");--> statement-breakpoint
+CREATE INDEX "rooms_host_user_id_idx" ON "rooms" USING btree ("host_user_id");--> statement-breakpoint
+CREATE INDEX "room_players_room_id_idx" ON "room_players" USING btree ("room_id");--> statement-breakpoint
+CREATE INDEX "room_players_user_id_idx" ON "room_players" USING btree ("user_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "room_players_room_user_unique" ON "room_players" USING btree ("room_id","user_id");--> statement-breakpoint
+CREATE INDEX "game_sessions_room_id_idx" ON "game_sessions" USING btree ("room_id");--> statement-breakpoint
+CREATE INDEX "turns_game_session_id_idx" ON "turns" USING btree ("game_session_id");--> statement-breakpoint
+CREATE INDEX "game_events_game_session_id_idx" ON "game_events" USING btree ("game_session_id");
