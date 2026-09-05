@@ -42,11 +42,13 @@ CREATE TABLE "characters" (
 	"level" integer DEFAULT 1 NOT NULL,
 	"experience" integer DEFAULT 0 NOT NULL,
 	"gold" integer DEFAULT 100 NOT NULL,
+	"mana" integer DEFAULT 50 NOT NULL,
 	"health" integer NOT NULL,
 	"max_health" integer NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "characters_gold_non_negative" CHECK ("characters"."gold" >= 0)
+	CONSTRAINT "characters_gold_non_negative" CHECK ("characters"."gold" >= 0),
+	CONSTRAINT "characters_mana_non_negative" CHECK ("characters"."mana" >= 0)
 );
 --> statement-breakpoint
 CREATE TABLE "items" (
@@ -174,6 +176,7 @@ CREATE TABLE "combat_participants" (
 	"attack" integer NOT NULL,
 	"defense" integer NOT NULL,
 	"alive" boolean DEFAULT true NOT NULL,
+	"cooldowns" jsonb DEFAULT '{}'::jsonb NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );

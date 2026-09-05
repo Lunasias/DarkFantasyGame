@@ -1,4 +1,4 @@
-import { boolean, index, integer, pgTable, text, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { boolean, index, integer, jsonb, pgTable, text, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import { combats } from "./combats";
 import { timestamps, uuidPk } from "./shared";
 
@@ -16,6 +16,8 @@ export const combatParticipants = pgTable(
     attack: integer("attack").notNull(),
     defense: integer("defense").notNull(),
     alive: boolean("alive").notNull().default(true),
+    /** Skill id → combat turn the skill becomes available again (authoritative). */
+    cooldowns: jsonb("cooldowns").notNull().default({}),
     ...timestamps(),
   },
   (table) => [

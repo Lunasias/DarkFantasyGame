@@ -12,6 +12,7 @@ import { getCharacterContentState, type CharacterContentState } from "../../db/c
 import { AppError } from "../errors";
 import { createCharacter, type CharacterStats } from "../../game/engine/character";
 import { effectiveStatsFor } from "../../game/jobs";
+import { maxManaFor } from "../../game/combat";
 
 /**
  * Complete, server-derived resume snapshot. Authenticates the actor against
@@ -40,7 +41,7 @@ export async function getGameSnapshot(db: Db, actorId: string, sessionId: string
   // Per-member character state (first character per profile).
   const charactersOut: {
     characterId: string; userId: string; jobId: string | null; level: number;
-    experience: number; health: number; maxHealth: number; gold: number;
+    experience: number; health: number; maxHealth: number; gold: number; mana: number; maxMana: number;
     effectiveStats: CharacterStats;
     inventory: { itemId: string; quantity: number }[];
     equipment: Record<string, string>;
@@ -72,6 +73,8 @@ export async function getGameSnapshot(db: Db, actorId: string, sessionId: string
       health: char.health,
       maxHealth: char.maxHealth,
       gold: char.gold,
+      mana: char.mana,
+      maxMana: maxManaFor(char.level),
       effectiveStats: effectiveStatsFor(c),
       inventory: invs.map((inv) => ({ itemId: inv.itemId, quantity: inv.quantity })),
       equipment: Object.fromEntries(c.equipment),
@@ -83,6 +86,7 @@ export async function getGameSnapshot(db: Db, actorId: string, sessionId: string
     combatTurn: number; stateVersion: number; combatTurnType: "player" | "monster" | "completed";
     participants: {
       characterId: string; hp: number; maxHp: number; attack: number; defense: number; alive: boolean;
+      cooldowns: Record<string, number>;
     }[];
   } | null = null;
   if (state.combat) {
@@ -104,6 +108,7 @@ export async function getGameSnapshot(db: Db, actorId: string, sessionId: string
       combatTurnType,
       participants: participants.map((p) => ({
         characterId: p.characterId, hp: p.hp, maxHp: p.maxHp, attack: p.attack, defense: p.defense, alive: p.alive,
+        cooldowns: (p.cooldowns ?? {}) as Record<string, number>,
       })),
     };
   }

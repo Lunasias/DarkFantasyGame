@@ -28,6 +28,7 @@ export const characters = pgTable(
     level: integer("level").notNull().default(1),
     experience: integer("experience").notNull().default(0),
     gold: integer("gold").notNull().default(100),
+    mana: integer("mana").notNull().default(50),
     health: integer("health").notNull(),
     maxHealth: integer("max_health").notNull(),
     ...timestamps(),
@@ -35,6 +36,7 @@ export const characters = pgTable(
   (table) => [
     index("characters_profile_id_idx").on(table.profileId),
     check("characters_gold_non_negative", sql`${table.gold} >= 0`),
+    check("characters_mana_non_negative", sql`${table.mana} >= 0`),
   ],
 );
 

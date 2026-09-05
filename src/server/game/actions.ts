@@ -24,6 +24,8 @@ export interface GameSnapshot {
     readonly health: number;
     readonly maxHealth: number;
     readonly gold: number;
+    readonly mana: number;
+    readonly maxMana: number;
     readonly effectiveStats: { maxHealth: number; health: number; attack: number; defense: number; speed: number };
     readonly inventory: readonly { itemId: string; quantity: number }[];
     readonly equipment: Readonly<Record<string, string>>;
@@ -39,6 +41,7 @@ export interface GameSnapshot {
     readonly participants: readonly {
       readonly characterId: string; readonly hp: number; readonly maxHp: number;
       readonly attack: number; readonly defense: number; readonly alive: boolean;
+      readonly cooldowns: Readonly<Record<string, number>>;
     }[];
   } | null;
   readonly content: Readonly<Record<string, {

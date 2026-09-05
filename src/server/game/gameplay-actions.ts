@@ -71,6 +71,21 @@ export async function resolveMonsterTurnAction(
   });
 }
 
+/** Use a skill (server-validated mana/cooldown/target/effect). */
+export async function useSkillAction(
+  sessionId: string,
+  characterId: string,
+  skillId: string,
+  targetId: string | null,
+): Promise<ApiResult<unknown>> {
+  return runAction(async () => {
+    const user = await requireUser();
+    const db = await getDb();
+    const service = new GameplayService(db, getRealtimeTransport());
+    return service.useSkill(user.id, sessionId, characterId, skillId, targetId);
+  });
+}
+
 async function run(userId: string, fn: (svc: GameplayService) => Promise<unknown>): Promise<ApiResult<unknown>> {
   const db = await getDb();
   return runAction(async () => fn(new GameplayService(db, getRealtimeTransport())));

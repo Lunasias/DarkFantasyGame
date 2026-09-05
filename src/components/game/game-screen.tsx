@@ -9,12 +9,14 @@ import {
   moveSessionAction,
   rollDiceAction,
   startEncounterAction,
+  useSkillAction as invokeSkillAction,
 } from "@/server/game/gameplay-actions";
 import {
   encounterForNode,
   isMonsterParticipant,
   monsterForParticipant,
 } from "@/game/content";
+import { allSkills } from "@/game/combat";
 import { unwrap } from "@/lib/unwrap";
 import type { AuthUser } from "@/lib/auth/auth-service";
 
@@ -223,6 +225,43 @@ export function GameScreen({ sessionId }: { sessionId: string }) {
             {combat.status === "active" && combat.combatTurnType !== "monster" && !canAttack && meCombatant && (
               <p className="mt-3 text-xs text-zinc-500">Waiting for the active combatant…</p>
             )}
+          </Section>
+        )}
+
+        {combat && combat.status === "active" && meChar && meCombatant && (
+          <Section title="Skills">
+            <p className="text-xs text-zinc-500">Mana {meChar.mana}/{meChar.maxMana}</p>
+            <ul className="mt-2 space-y-2 text-sm">
+              {allSkills().filter((s) => s.id !== "basic_attack").map((s) => {
+                const cdReady = meCombatant ? (meCombatant.cooldowns[s.id] ?? 0) : 0;
+                const cdRemaining = Math.max(0, cdReady - combat.combatTurn);
+                const offCooldown = cdRemaining === 0;
+                const enoughMana = meChar.mana >= s.manaCost;
+                const enabled = canAttack && offCooldown && enoughMana && !busy;
+                const target = s.target === "enemy"
+                  ? combat.participants.find((p) => p.characterId !== meChar.characterId && p.alive)?.characterId ?? null
+                  : null;
+                return (
+                  <li key={s.id} className="flex items-center justify-between gap-2">
+                    <span className="text-zinc-200">{s.name}</span>
+                    <span className="flex items-center gap-2 text-xs text-zinc-500">
+                      <span>{s.manaCost} MP</span>
+                      {s.cooldown > 0 && <span>CD {cdRemaining > 0 ? cdRemaining : s.cooldown}</span>}
+                      <button
+                        disabled={!enabled}
+                        onClick={() => guard(() => invokeSkillAction(sessionId, meChar.characterId, s.id, target))}
+                        className="rounded bg-blue-800 px-2.5 py-1 text-xs text-white disabled:opacity-40"
+                      >
+                        Use
+                      </button>
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+            <p className="mt-2 text-xs text-zinc-600">
+              {!canAttack ? "Enemy turn — skills locked." : "Choose a skill."}
+            </p>
           </Section>
         )}
 

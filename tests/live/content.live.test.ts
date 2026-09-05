@@ -427,4 +427,99 @@ describe.runIf(ENABLED)("Phase 19 content persistence (real Neon)", () => {
       expect(defeated?.alive).toBe(false);
     }, 30000);
   });
+
+  describe("Skills & mana (real Neon)", () => {
+    async function startCombat(unique: string, mPid: string) {
+      const host = await createChar(unique);
+      const guest = await createChar(`${unique}_g`);
+      const { sessionId } = await setupSession(host, guest, 2);
+      const svc = new GameplayService(db);
+      await placeAt(sessionId, host.characterId, "B");
+      const started = await svc.startEncounter(host.userId, sessionId, host.characterId);
+      return { host, guest, sessionId, svc, combatId: started.combatId, mPid };
+    }
+
+    it("power strike deducts mana, damages, and is blocked by cooldown (no double)", async () => {
+      const mPid = monsterParticipantId("ash_skeleton");
+      const { host, sessionId, svc, combatId } = await startCombat("sk1", mPid);
+      // Reset monster HP so it survives a strike, then cooldown blocks a second.
+      await db.update(combatParticipants).set({ hp: 60 }).where(and(
+        eq(combatParticipants.combatId, combatId), eq(combatParticipants.characterId, mPid)));
+
+      const r1 = await svc.useSkill(host.userId, sessionId, host.characterId, "power_strike", mPid);
+      expect(r1.effect).toBe("damage");
+      expect(r1.amount).toBe(14);
+      expect(r1.mana).toBe(40);
+      expect(r1.victory).toBe(false);
+      const monsterRow = await db.select().from(combatParticipants).where(and(
+        eq(combatParticipants.combatId, combatId), eq(combatParticipants.characterId, mPid))).limit(1);
+      expect(monsterRow[0]!.hp).toBe(46); // 60 - 14
+      const charRow = await db.select().from(characters).where(eq(characters.id, host.characterId)).limit(1);
+      expect(charRow[0]!.mana).toBe(40);
+      // Monster counter fired (player took damage) and player turn returned.
+      expect(r1.monsterTurn as { defeated: boolean } | null).not.toBeNull();
+      // Cooldown prevents immediate reuse (and no double damage/mana).
+      await expect(svc.useSkill(host.userId, sessionId, host.characterId, "power_strike", mPid)).rejects.toThrow();
+      const monsterRow2 = await db.select().from(combatParticipants).where(and(
+        eq(combatParticipants.combatId, combatId), eq(combatParticipants.characterId, mPid))).limit(1);
+      expect(monsterRow2[0]!.hp).toBe(46);
+    }, 30000);
+
+    it("fireball kills the monster → combat completes + exactly-once reward", async () => {
+      const mPid = monsterParticipantId("ash_skeleton");
+      const { host, sessionId, svc, combatId } = await startCombat("sk2", mPid);
+      await db.update(combatParticipants).set({ hp: 5 }).where(and(
+        eq(combatParticipants.combatId, combatId), eq(combatParticipants.characterId, mPid)));
+      const r = await svc.useSkill(host.userId, sessionId, host.characterId, "fireball", mPid);
+      expect(r.effect).toBe("damage");
+      expect(r.victory).toBe(true);
+      expect(r.reward?.alreadyClaimed).toBe(false);
+      const done = await db.select().from(combats).where(eq(combats.id, combatId)).limit(1);
+      expect(done[0]?.status).toBe("completed");
+      expect(done[0]?.winner).toBe(host.characterId);
+      const claims = await db.select().from(rewardClaims).where(eq(rewardClaims.characterId, host.characterId));
+      expect(claims.filter((c) => c.rewardKey === `combat:${combatId}`)).toHaveLength(1);
+      await expect(svc.useSkill(host.userId, sessionId, host.characterId, "fireball", mPid)).rejects.toThrow();
+      const snap = await getGameSnapshot(db, host.userId, sessionId);
+      expect(snap.combat?.status).toBe("completed");
+    }, 30000);
+
+    it("heal restores HP up to max and decreases mana, never exceeding max", async () => {
+      const mPid = monsterParticipantId("ash_skeleton");
+      const { host, sessionId, svc, combatId } = await startCombat("sk3", mPid);
+      // Hurt the player so healing has headroom.
+      await db.update(combatParticipants).set({ hp: 30 }).where(and(
+        eq(combatParticipants.combatId, combatId), eq(combatParticipants.characterId, host.characterId)));
+      const r = await svc.useSkill(host.userId, sessionId, host.characterId, "heal", null);
+      expect(r.effect).toBe("heal");
+      expect(r.amount).toBe(20); // healAmount(20, 30, 100) = 20
+      expect(r.mana).toBe(35); // 50 - 15
+      const charRow = await db.select().from(characters).where(eq(characters.id, host.characterId)).limit(1);
+      expect(charRow[0]!.mana).toBe(35);
+      const playerRow = await db.select().from(combatParticipants).where(and(
+        eq(combatParticipants.combatId, combatId), eq(combatParticipants.characterId, host.characterId))).limit(1);
+      // After heal (50) the monster counter hits (7) → 43; never above max.
+      expect(playerRow[0]!.hp).toBeLessThanOrEqual(100);
+      expect(playerRow[0]!.hp).toBeGreaterThan(0);
+    }, 30000);
+
+    it("enforces skill security and resource rules", async () => {
+      const mPid = monsterParticipantId("ash_skeleton");
+      const { host, guest, sessionId, svc } = await startCombat("sk4", mPid);
+      const outsider = await createChar("sk_out");
+
+      // non-member
+      await expect(svc.useSkill(outsider.userId, sessionId, host.characterId, "fireball", mPid)).rejects.toThrow();
+      // wrong owner (guest member, not owner of host char)
+      await expect(svc.useSkill(guest.userId, sessionId, host.characterId, "fireball", mPid)).rejects.toThrow();
+      // insufficient mana (set mana low)
+      await db.update(characters).set({ mana: 5 }).where(eq(characters.id, host.characterId));
+      await expect(svc.useSkill(host.userId, sessionId, host.characterId, "power_strike", mPid)).rejects.toThrow();
+      // invalid skill id
+      await db.update(characters).set({ mana: 50 }).where(eq(characters.id, host.characterId));
+      await expect(svc.useSkill(host.userId, sessionId, host.characterId, "bogus", mPid)).rejects.toThrow();
+      // invalid target (self as target for enemy skill) rejected
+      await expect(svc.useSkill(host.userId, sessionId, host.characterId, "power_strike", host.characterId)).rejects.toThrow();
+    }, 30000);
+  });
 });

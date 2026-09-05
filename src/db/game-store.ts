@@ -15,6 +15,8 @@ import { createCharacter } from "../game/engine/character";
 import { addExperience } from "../game/progression/leveling";
 import { addGold } from "../game/economy/gold";
 import { addItem } from "../game/items/inventory";
+import { getSkill, skillDamage, healAmount } from "../game/combat/skills";
+import { isMonsterParticipant } from "../game/content/encounters";
 
 /** Reconstruct the authoritative snapshot of a session for resume. */
 export async function loadGameState(db: Db, sessionId: string) {
@@ -389,5 +391,118 @@ export async function persistMonsterAttack(db: Db, input: {
       activeCombatant: input.targetId, combatTurn: combat.combatTurn + 1, stateVersion: combat.stateVersion + 1,
     }).where(eq(combats.id, input.combatId));
     return { damage, defenderHealth: newHp, defeated, winner: null, activeCombatant: input.targetId, status: "active" };
+  });
+}
+
+/**
+ * Authoritative, atomic skill execution. Validates skill, target, alive caster,
+ * activeCombatant, cooldown, and mana inside one transaction (with row locks),
+ * then applies server-derived damage/heal, deducts mana, updates cooldown, and
+ * advances/detects combat completion. Returns server-derived results only. The
+ * client never supplies damage, heal amount, mana cost, or HP.
+ */
+export async function persistSkill(db: Db, input: {
+  combatId: string;
+  casterId: string;
+  skillId: string;
+  targetId: string;
+}): Promise<{
+  effect: "damage" | "heal";
+  amount: number;
+  targetId: string;
+  targetHp: number;
+  casterHp: number;
+  mana: number;
+  victory: boolean;
+  winner: string | null;
+  activeCombatant: string | null;
+  status: string;
+}> {
+  return db.transaction(async (tx) => {
+    const exec = tx as unknown as Db;
+    const [combat] = await exec.select().from(combats).where(eq(combats.id, input.combatId)).for("update").limit(1);
+    if (!combat) throw new GameError("INVALID_ACTION", "Combat not found");
+    if (combat.status !== "active") throw new GameError("INVALID_ACTION", "Combat has completed");
+    if (combat.activeCombatant !== input.casterId) throw new GameError("INVALID_ACTION", "It is not your turn");
+
+    const skill = getSkill(input.skillId);
+    if (!skill) throw new GameError("INVALID_ACTION", `Unknown skill "${input.skillId}"`);
+
+    const [caster] = await exec.select().from(combatParticipants)
+      .where(and(eq(combatParticipants.combatId, input.combatId), eq(combatParticipants.characterId, input.casterId)))
+      .for("update").limit(1);
+    if (!caster) throw new GameError("INVALID_ACTION", "You are not in this combat");
+    if (!caster.alive) throw new GameError("INVALID_ACTION", "You are defeated");
+
+    // Resolve target participant by skill target type.
+    let targetId: string;
+    if (skill.target === "self") {
+      targetId = input.casterId;
+    } else {
+      if (!input.targetId) throw new GameError("INVALID_ACTION", "A target is required");
+      if (!isMonsterParticipant(input.targetId)) throw new GameError("INVALID_ACTION", "Invalid target");
+      targetId = input.targetId;
+    }
+    const [target] = await exec.select().from(combatParticipants)
+      .where(and(eq(combatParticipants.combatId, input.combatId), eq(combatParticipants.characterId, targetId)))
+      .for("update").limit(1);
+    if (!target) throw new GameError("INVALID_ACTION", "Invalid target");
+    if (targetId !== input.casterId && !target.alive) throw new GameError("INVALID_ACTION", "Target is already defeated");
+
+    // Cooldown check from persisted participant cooldowns.
+    const cooldowns = (caster.cooldowns ?? {}) as Record<string, number>;
+    const availableFrom = cooldowns[skill.id];
+    if (typeof availableFrom === "number" && combat.combatTurn < availableFrom) {
+      throw new GameError("INVALID_ACTION", "Skill is on cooldown");
+    }
+
+    // Mana check against authoritative character mana.
+    const [character] = await exec.select().from(characters).where(eq(characters.id, input.casterId)).for("update").limit(1);
+    if (!character) throw new GameError("INVALID_ACTION", "Character not found");
+    if (character.mana < skill.manaCost) throw new GameError("INVALID_ACTION", "Insufficient mana");
+    const newMana = character.mana - skill.manaCost;
+
+    let effect: "damage" | "heal";
+    let amount: number;
+    let targetHp: number;
+    let casterHp: number;
+    if (skill.effect === "heal") {
+      effect = "heal";
+      amount = healAmount(skill, caster.hp, caster.maxHp);
+      casterHp = caster.hp + amount;
+      await exec.update(combatParticipants).set({ hp: casterHp }).where(eq(combatParticipants.id, caster.id));
+      targetHp = target.hp;
+    } else {
+      effect = "damage";
+      amount = skillDamage(skill, caster.attack, target.defense);
+      targetHp = Math.max(0, target.hp - amount);
+      await exec.update(combatParticipants).set({ hp: targetHp, alive: targetHp > 0 }).where(eq(combatParticipants.id, target.id));
+      casterHp = caster.hp;
+    }
+
+    // Persist mana + cooldown atomically.
+    await exec.update(characters).set({ mana: newMana }).where(eq(characters.id, input.casterId));
+    const nextCooldowns = { ...cooldowns };
+    if (skill.cooldown > 0) nextCooldowns[skill.id] = combat.combatTurn + skill.cooldown;
+    else delete nextCooldowns[skill.id];
+    await exec.update(combatParticipants).set({ cooldowns: nextCooldowns }).where(eq(combatParticipants.id, caster.id));
+
+    // Victory detection: only the caster alive.
+    const all = await exec.select().from(combatParticipants).where(eq(combatParticipants.combatId, input.combatId));
+    const aliveIds = all.filter((p) => p.alive).map((p) => p.characterId);
+    const victory = aliveIds.length === 1;
+    if (victory) {
+      await exec.update(combats).set({
+        status: "completed", winner: input.casterId, activeCombatant: null, stateVersion: combat.stateVersion + 1,
+      }).where(eq(combats.id, input.combatId));
+      return { effect, amount, targetId, targetHp, casterHp, mana: newMana, victory, winner: input.casterId, activeCombatant: null, status: "completed" };
+    }
+
+    // Monster survived → it becomes the active combatant (Phase 22 monster turn).
+    const nextActive = aliveIds.find((id) => id !== input.casterId) ?? null;
+    await exec.update(combats).set({
+      activeCombatant: nextActive, combatTurn: combat.combatTurn + 1, stateVersion: combat.stateVersion + 1,
+    }).where(eq(combats.id, input.combatId));
+    return { effect, amount, targetId, targetHp, casterHp, mana: newMana, victory: false, winner: null, activeCombatant: nextActive, status: "active" };
   });
 }

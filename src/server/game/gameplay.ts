@@ -16,6 +16,7 @@ import {
   persistReward,
   persistShopBuy,
   persistShopSell,
+  persistSkill,
 } from "../../db/game-store";
 import { combatParticipants } from "../../db/schema/combat-participants";
 import { AppError } from "../errors";
@@ -245,6 +246,62 @@ export class GameplayService {
       damage: result.damage, defeated: result.defeated, status: result.status,
     });
     return { action: "attack" as const, ...result, targetParticipantId: decision.targetParticipantId };
+  }
+
+  /**
+   * Authoritative skill execution. Validates session membership, character
+   * ownership, active combat, participant membership, alive caster, active
+   * combatant, skill validity, target, cooldown, and mana; applies the
+   * server-derived damage/heal + mana + cooldown atomically, then reuses the
+   * Phase 22 monster-turn system if the monster survives. Client never supplies
+   * damage, heal, mana, or HP.
+   */
+  async useSkill(actorId: string, sessionId: string, characterId: string, skillId: string, targetId: string | null = null) {
+    const roomId = await this.assertSessionAccess(actorId, sessionId);
+    await this.assertCharacterOwner(actorId, characterId);
+    const state = await loadGameState(this.db, sessionId);
+    if (!state.combat) throw new AppError("INVALID_ACTION", "No active combat");
+
+    const result = await persistSkill(this.db, {
+      combatId: state.combat.id,
+      casterId: characterId,
+      skillId,
+      targetId: targetId ?? "",
+    });
+
+    await this.publish(roomId, "SKILL_USED", {
+      combatId: state.combat.id, characterId, skillId,
+      effect: result.effect, amount: result.amount,
+      targetId: result.targetId, mana: result.mana, victory: result.victory,
+    });
+    if (result.effect === "damage") {
+      await this.publish(roomId, "DAMAGE_DEALT", { attacker: characterId, target: result.targetId, damage: result.amount, victory: result.victory });
+    } else {
+      await this.publish(roomId, "HEAL_APPLIED", { characterId, amount: result.amount, hp: result.casterHp });
+    }
+
+    let reward: { alreadyClaimed: boolean } | null = null;
+    let monsterTurn: unknown = null;
+    if (result.victory) {
+      const participants = await this.db.select().from(combatParticipants)
+        .where(eq(combatParticipants.combatId, state.combat.id));
+      const pve = encounterRewardFor(participants.map((p) => p.characterId));
+      reward = await persistReward(this.db, {
+        characterId,
+        rewardKey: `combat:${state.combat.id}`,
+        experience: pve?.experience ?? 100,
+        gold: pve?.gold ?? 50,
+        items: [],
+        itemDrops: true,
+      });
+      await this.publish(roomId, "COMBAT_VICTORY", { combatId: state.combat.id, winner: result.winner, characterId });
+    } else {
+      const after = await loadGameState(this.db, sessionId);
+      if (after.combat?.activeCombatant && isMonsterParticipant(after.combat.activeCombatant)) {
+        monsterTurn = await this.runMonsterTurn(roomId, sessionId, after.combat.id);
+      }
+    }
+    return { skill: skillId, effect: result.effect, amount: result.amount, mana: result.mana, victory: result.victory, winner: result.winner, reward, monsterTurn };
   }
 
   /**
