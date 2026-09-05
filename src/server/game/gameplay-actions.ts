@@ -20,15 +20,16 @@ export async function moveSessionAction(
   });
 }
 
-/** Authoritative attack on a session. */
+/** Authoritative attack on a session (uses the actor's character). */
 export async function attackSessionAction(
   sessionId: string,
+  characterId: string,
   targetId: string,
-): Promise<ApiResult<{ targetId: string; damage: number }>> {
+): Promise<ApiResult<unknown>> {
   return runAction(async () => {
     const user = await requireUser();
     const db = await getDb();
     const service = new GameplayService(db, getRealtimeTransport());
-    return service.attack(user.id, sessionId, targetId);
+    return service.attack(user.id, sessionId, characterId, targetId);
   });
 }

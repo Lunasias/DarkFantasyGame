@@ -8,6 +8,7 @@ import { characterInventory } from "../../db/schema/character-inventory";
 import {
   loadGameState,
   persistCharacter,
+  persistCombatAttack,
   persistInventorySet,
   persistMove,
   persistReward,
@@ -103,14 +104,45 @@ export class GameplayService {
     return { nodeId, stateVersion: next };
   }
 
-  /** Authoritative attack (server damage; combat persisted via combat store). */
-  async attack(actorId: string, sessionId: string, targetId: string) {
+  /**
+   * Authoritative attack. Validates session membership + active turn + combat
+   * state, applies server-derived damage from the participant's effective stats,
+   * persists HP/turn/victory transactionally, and on victory grants the reward
+   * exactly once (durable reward_claims idempotency).
+   */
+  async attack(actorId: string, sessionId: string, characterId: string, targetId: string) {
     const roomId = await this.assertSessionAccess(actorId, sessionId);
     await this.requireActive(actorId, sessionId);
-    if (!targetId || targetId === actorId) throw new AppError("INVALID_ACTION", "Invalid target");
-    const damage = Math.max(1, 10 - 5); // server-derived (base stats)
-    await this.publish(roomId, "DAMAGE_DEALT", { attacker: actorId, target: targetId, damage });
-    return { targetId, damage };
+    await this.assertCharacterOwner(actorId, characterId);
+    if (!targetId || targetId === characterId) throw new AppError("INVALID_ACTION", "Invalid target");
+    const state = await loadGameState(this.db, sessionId);
+    if (!state.combat) throw new AppError("INVALID_ACTION", "No active combat");
+
+    const result = await persistCombatAttack(this.db, {
+      combatId: state.combat.id,
+      attackerId: characterId,
+      targetId,
+    });
+    await this.publish(roomId, "DAMAGE_DEALT", {
+      attacker: characterId, target: targetId,
+      damage: result.damage, victory: result.victory,
+    });
+
+    let reward: { alreadyClaimed: boolean } | null = null;
+    if (result.victory) {
+      reward = await persistReward(this.db, {
+        characterId, rewardKey: `combat:${state.combat.id}`,
+        experience: 100, gold: 50, items: [], itemDrops: true,
+      });
+    }
+    return {
+      damage: result.damage,
+      defenderHealth: result.defenderHealth,
+      defeated: result.defeated,
+      victory: result.victory,
+      winner: result.winner,
+      reward,
+    };
   }
 
   /** Durable, idempotent reward via reward_claims unique key. */

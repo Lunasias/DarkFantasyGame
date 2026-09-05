@@ -279,3 +279,54 @@ export async function persistCombatStart(db: Db, input: {
 export async function persistCombatComplete(db: Db, combatId: string, winner: string) {
   await db.update(combats).set({ status: "completed", winner }).where(eq(combats.id, combatId));
 }
+
+/**
+ * Authoritative combat attack within one transaction: validates combat/active
+ * combatant/alive target, computes damage from the participant's effective
+ * stats (base→job→level→equipment snapshot captured at start), updates HP,
+ * advances the active combatant, and detects victory. Returns server-derived
+ * results only.
+ */
+export async function persistCombatAttack(db: Db, input: {
+  combatId: string;
+  attackerId: string;
+  targetId: string;
+}): Promise<{ damage: number; defenderHealth: number; defeated: boolean; victory: boolean; winner: string | null }> {
+  return db.transaction(async (tx) => {
+    const exec = tx as unknown as Db;
+    const [combat] = await exec.select().from(combats).where(eq(combats.id, input.combatId)).for("update").limit(1);
+    if (!combat) throw new GameError("INVALID_ACTION", "Combat not found");
+    if (combat.status !== "active") throw new GameError("INVALID_ACTION", "Combat has completed");
+    if (combat.activeCombatant !== input.attackerId) throw new GameError("NOT_ACTIVE_PLAYER", "It is not this combatant's turn");
+
+    const [attacker] = await exec.select().from(combatParticipants)
+      .where(and(eq(combatParticipants.combatId, input.combatId), eq(combatParticipants.characterId, input.attackerId)))
+      .for("update").limit(1);
+    const [target] = await exec.select().from(combatParticipants)
+      .where(and(eq(combatParticipants.combatId, input.combatId), eq(combatParticipants.characterId, input.targetId)))
+      .for("update").limit(1);
+    if (!attacker || !target || attacker.characterId === target.characterId) throw new GameError("INVALID_ACTION", "Invalid combatants");
+    if (!target.alive) throw new GameError("INVALID_ACTION", "Target is already defeated");
+
+    const damage = Math.max(1, attacker.attack - target.defense);
+    const newHp = Math.max(0, target.hp - damage);
+    const defeated = newHp === 0;
+    await exec.update(combatParticipants).set({ hp: newHp, alive: !defeated }).where(eq(combatParticipants.id, target.id));
+
+    const all = await exec.select().from(combatParticipants).where(eq(combatParticipants.combatId, input.combatId));
+    const aliveIds = all.filter((p) => p.alive).map((p) => p.characterId);
+    const victory = aliveIds.length === 1;
+    const winner = victory ? aliveIds[0] : null;
+
+    if (victory) {
+      await exec.update(combats).set({ status: "completed", winner, stateVersion: combat.stateVersion + 1 }).where(eq(combats.id, input.combatId));
+    } else {
+      const idx = aliveIds.indexOf(input.attackerId);
+      const nextActive = aliveIds[(idx + 1) % aliveIds.length];
+      await exec.update(combats).set({
+        activeCombatant: nextActive, combatTurn: combat.combatTurn + 1, stateVersion: combat.stateVersion + 1,
+      }).where(eq(combats.id, input.combatId));
+    }
+    return { damage, defenderHealth: newHp, defeated, victory, winner };
+  });
+}

@@ -10,6 +10,8 @@ import { characterInventory } from "@/db/schema/character-inventory";
 import { gameSessions } from "@/db/schema/game-sessions";
 import { rooms } from "@/db/schema/rooms";
 import { roomPlayers } from "@/db/schema/room-players";
+import { combats } from "@/db/schema/combats";
+import { combatParticipants } from "@/db/schema/combat-participants";
 import { items } from "@/db/schema/items";
 import { shops } from "@/db/schema/shops";
 import { shopInventory } from "@/db/schema/shop-inventory";
@@ -19,6 +21,7 @@ import {
   persistCharacter,
   persistCombatComplete,
   persistCombatStart,
+  persistCombatAttack,
   persistInventorySet,
   persistMove,
   persistReward,
@@ -198,6 +201,44 @@ describe.runIf(ENABLED)("Phase 11 persistence (real Neon)", () => {
       await expect(svc.move(outsider.userId, sessionId, "B")).rejects.toThrow(); // non-member
       const ok = await svc.move(host.userId, sessionId, "B");
       expect(ok.nodeId).toBe("B");
+    }, 30000);
+
+    it("persists combat HP and grants victory reward exactly once", async () => {
+      const host = await createChar("cb_host");
+      const guest = await createChar("cb_guest");
+      const roomId = createId();
+      const sessionId = createId();
+      sessionIds.push(sessionId);
+      await db.insert(rooms).values({ id: roomId, roomCode: "CBCB01", name: "CB", hostUserId: host.userId, status: "in_game", maxPlayers: 4 });
+      await db.insert(roomPlayers).values({ id: createId(), roomId, userId: host.userId, slot: 0, ready: true, isHost: true, connected: true });
+      await db.insert(roomPlayers).values({ id: createId(), roomId, userId: guest.userId, slot: 1, ready: true, isHost: false, connected: true });
+      await db.insert(gameSessions).values({ id: sessionId, roomId, phase: "active", currentTurnNumber: 1, stateVersion: 0 });
+
+      const combatId = await persistCombatStart(db, {
+        gameSessionId: sessionId,
+        participants: [
+          { characterId: host.characterId, hp: 20, maxHp: 20, attack: 15, defense: 5 },
+          { characterId: guest.characterId, hp: 10, maxHp: 10, attack: 10, defense: 5 },
+        ],
+      });
+
+      const svc = new GameplayService(db);
+      const res = await svc.attack(host.userId, sessionId, host.characterId, guest.characterId);
+      expect(res.damage).toBe(10); // max(1, 15 - 5)
+      expect(res.defeated).toBe(true);
+      expect(res.victory).toBe(true);
+      expect(res.reward?.alreadyClaimed).toBe(false);
+
+      const target = await db.select().from(combatParticipants).where(and(
+        eq(combatParticipants.combatId, combatId), eq(combatParticipants.characterId, guest.characterId))).limit(1);
+      expect(target[0]?.hp).toBe(0);
+      expect(target[0]?.alive).toBe(false);
+      const c = await db.select().from(combats).where(eq(combats.id, combatId)).limit(1);
+      expect(c[0]?.status).toBe("completed");
+      expect(c[0]?.winner).toBe(host.characterId);
+
+      // completed combat rejects further attacks (no duplicate reward)
+      await expect(svc.attack(host.userId, sessionId, host.characterId, guest.characterId)).rejects.toThrow();
     }, 30000);
   });
 });
