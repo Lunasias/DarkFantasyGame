@@ -9,8 +9,11 @@ export type BoardNodeKind =
   | "start"
   | "normal"
   | "town"
+  | "shop"
   | "dungeon"
   | "event"
+  | "battle"
+  | "special"
   | "boss";
 
 export interface BoardNodePosition {
