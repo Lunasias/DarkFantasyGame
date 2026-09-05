@@ -24,6 +24,8 @@ export class Character {
   name: string;
   readonly archetype: string;
   stats: CharacterStats;
+  /** Assigned job id (null until a job is selected via the jobs domain). */
+  jobId: string | null = null;
 
   constructor(
     id: CharacterId,
