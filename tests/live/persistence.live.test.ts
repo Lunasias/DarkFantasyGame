@@ -21,7 +21,6 @@ import {
   persistCharacter,
   persistCombatComplete,
   persistCombatStart,
-  persistCombatAttack,
   persistInventorySet,
   persistMove,
   persistReward,

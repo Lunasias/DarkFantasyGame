@@ -7,6 +7,18 @@ import { runAction } from "../../lib/result";
 import { getRealtimeTransport } from "../realtime/hub";
 import { GameplayService } from "./gameplay";
 
+/** Authoritative dice roll (membership + active-turn guard). */
+export async function rollDiceAction(
+  sessionId: string,
+): Promise<ApiResult<{ dice: number }>> {
+  return runAction(async () => {
+    const user = await requireUser();
+    const db = await getDb();
+    const service = new GameplayService(db, getRealtimeTransport());
+    return service.rollDice(user.id, sessionId);
+  });
+}
+
 /** Authoritative move on a session (membership + active-turn guard). */
 export async function moveSessionAction(
   sessionId: string,

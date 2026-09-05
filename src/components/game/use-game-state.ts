@@ -17,6 +17,7 @@ export function useGameState(sessionId: string) {
   const [error, setError] = useState<string | null>(null);
   const [live, setLive] = useState(false);
   const [lastVersion, setLastVersion] = useState<number | null>(null);
+  const [now, setNow] = useState(0);
 
   useEffect(() => {
     let alive = true;
@@ -38,7 +39,7 @@ export function useGameState(sessionId: string) {
     return () => {
       alive = false;
     };
-  }, [sessionId]);
+  }, [sessionId, now]);
 
   useEffect(() => {
     if (!snapshot?.roomCode) return;
@@ -62,5 +63,7 @@ export function useGameState(sessionId: string) {
     };
   }, [snapshot?.roomCode, snapshot, lastVersion]);
 
-  return { snapshot, status, error, live };
+  const refresh = () => setNow((n) => n + 1);
+
+  return { snapshot, status, error, live, refresh };
 }
