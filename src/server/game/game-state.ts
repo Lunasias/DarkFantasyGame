@@ -80,13 +80,20 @@ export async function getGameSnapshot(db: Db, actorId: string, sessionId: string
 
   let combat: {
     id: string; status: string; activeCombatant: string | null; winner: string | null;
-    combatTurn: number; stateVersion: number; participants: {
+    combatTurn: number; stateVersion: number; combatTurnType: "player" | "monster" | "completed";
+    participants: {
       characterId: string; hp: number; maxHp: number; attack: number; defense: number; alive: boolean;
     }[];
   } | null = null;
   if (state.combat) {
     const participants = await db.select().from(combatParticipants)
       .where(eq(combatParticipants.combatId, state.combat.id)).orderBy(asc(combatParticipants.characterId));
+    const isMonster = !!state.combat.activeCombatant && state.combat.activeCombatant.startsWith("monster:");
+    const combatTurnType = state.combat.status !== "active"
+      ? "completed"
+      : isMonster
+        ? "monster"
+        : "player";
     combat = {
       id: state.combat.id,
       status: state.combat.status,
@@ -94,6 +101,7 @@ export async function getGameSnapshot(db: Db, actorId: string, sessionId: string
       winner: state.combat.winner,
       combatTurn: state.combat.combatTurn,
       stateVersion: state.combat.stateVersion,
+      combatTurnType,
       participants: participants.map((p) => ({
         characterId: p.characterId, hp: p.hp, maxHp: p.maxHp, attack: p.attack, defense: p.defense, alive: p.alive,
       })),

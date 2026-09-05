@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { drizzle } from "drizzle-orm/node-postgres";
-import { eq, like } from "drizzle-orm";
+import { and, eq, like } from "drizzle-orm";
 import { Pool } from "pg";
 import * as schema from "@/db/schema";
 import { users } from "@/db/schema/users";
@@ -293,6 +293,138 @@ describe.runIf(ENABLED)("Phase 19 content persistence (real Neon)", () => {
       const snap = await getGameSnapshot(db, host.userId, sessionId);
       expect(snap.combat?.status).toBe("completed");
       expect(snap.combat?.winner).toBe(host.characterId);
+    }, 30000);
+  });
+
+  describe("PvE combat AI loop (real Neon)", () => {
+    it("alternates player + monster turns until the player wins exactly once", async () => {
+      const host = await createChar("ai_host");
+      const guest = await createChar("ai_guest");
+      const { sessionId } = await setupSession(host, guest, 2);
+      const svc = new GameplayService(db);
+      const mPid = monsterParticipantId("ash_skeleton");
+
+      await placeAt(sessionId, host.characterId, "B");
+      const started = await svc.startEncounter(host.userId, sessionId, host.characterId);
+
+      // Weaken the monster so the loop resolves in a few rounds.
+      await db.update(combatParticipants).set({ hp: 10 }).where(eq(combatParticipants.id, (
+        (await db.select().from(combatParticipants).where(and(
+          eq(combatParticipants.combatId, started.combatId),
+          eq(combatParticipants.characterId, mPid),
+        )).limit(1))[0])!.id));
+
+      let wins = 0;
+      for (let i = 0; i < 30; i++) {
+        const r = await svc.attack(host.userId, sessionId, host.characterId, mPid);
+        if (r.victory) { wins++; break; }
+        // Each player action resolves one monster counter (player damage applied).
+        expect(r.monsterTurn as { damage: number } | null).not.toBeNull();
+      }
+      expect(wins).toBe(1);
+
+      const done = await db.select().from(combats).where(eq(combats.id, started.combatId)).limit(1);
+      expect(done[0]?.status).toBe("completed");
+      expect(done[0]?.winner).toBe(host.characterId);
+
+      // Exactly one PvE reward claim.
+      const claims = await db.select().from(rewardClaims).where(eq(rewardClaims.characterId, host.characterId));
+      expect(claims.filter((c) => c.rewardKey === `combat:${started.combatId}`)).toHaveLength(1);
+      expect(claims.find((c) => c.rewardKey === `combat:${started.combatId}`)?.experience).toBe(150);
+
+      // Reconnect reconstructs completed combat.
+      const snap = await getGameSnapshot(db, host.userId, sessionId);
+      expect(snap.combat?.status).toBe("completed");
+      expect(snap.combat?.winner).toBe(host.characterId);
+      expect(snap.combat?.combatTurnType).toBe("completed");
+    }, 30000);
+
+    it("rejects a player attack during a monster turn (no double, no client damage)", async () => {
+      const host = await createChar("turn_host");
+      const guest = await createChar("turn_guest");
+      const { sessionId } = await setupSession(host, guest, 2);
+      const svc = new GameplayService(db);
+      const mPid = monsterParticipantId("ash_skeleton");
+      await placeAt(sessionId, host.characterId, "B");
+      const started = await svc.startEncounter(host.userId, sessionId, host.characterId);
+
+      // Force it to be the monster's turn.
+      await db.update(combats).set({ activeCombatant: mPid }).where(eq(combats.id, started.combatId));
+      // Player cannot attack on the monster's turn.
+      await expect(svc.attack(host.userId, sessionId, host.characterId, mPid)).rejects.toThrow();
+      // Second attack is still rejected (no double).
+      await expect(svc.attack(host.userId, sessionId, host.characterId, mPid)).rejects.toThrow();
+
+      // Resolve the monster turn once; a second resolution is rejected (idempotent).
+      const once = await svc.resolveMonsterTurn(host.userId, sessionId);
+      expect((once as { action: string }).action).toBe("attack");
+      const playerPart = await db.select().from(combatParticipants).where(and(
+        eq(combatParticipants.combatId, started.combatId),
+        eq(combatParticipants.characterId, host.characterId),
+      )).limit(1);
+      expect(playerPart[0]!.hp).toBeLessThan(100);
+      const hpAfter = playerPart[0]!.hp;
+      await expect(svc.resolveMonsterTurn(host.userId, sessionId)).rejects.toThrow(); // player's turn now / not monster
+      const playerPart2 = await db.select().from(combatParticipants).where(and(
+        eq(combatParticipants.combatId, started.combatId),
+        eq(combatParticipants.characterId, host.characterId),
+      )).limit(1);
+      expect(playerPart2[0]!.hp).toBe(hpAfter); // no duplicate damage
+    }, 30000);
+
+    it("completes defeat when the player reaches 0 HP, grants no reward", async () => {
+      const host = await createChar("def_host");
+      const guest = await createChar("def_guest");
+      const outsider = await createChar("def_out");
+      const { sessionId } = await setupSession(host, guest, 2);
+      const svc = new GameplayService(db);
+      const mPid = monsterParticipantId("ash_skeleton");
+      await placeAt(sessionId, host.characterId, "B");
+      const started = await svc.startEncounter(host.userId, sessionId, host.characterId);
+
+      // Non-member cannot resolve a monster turn.
+      await expect(svc.resolveMonsterTurn(outsider.userId, sessionId)).rejects.toThrow();
+
+      // Set the player to 5 HP so the monster's first counter is lethal (7 dmg).
+      const playerRow = (await db.select().from(combatParticipants).where(and(
+        eq(combatParticipants.combatId, started.combatId),
+        eq(combatParticipants.characterId, host.characterId),
+      )).limit(1))[0];
+      await db.update(combatParticipants).set({ hp: 5 }).where(eq(combatParticipants.id, playerRow!.id));
+
+      // Player attacks (monster survives), monster counter is lethal → defeat.
+      const r = await svc.attack(host.userId, sessionId, host.characterId, mPid);
+      expect(r.victory).toBe(false);
+      const mTurn = r.monsterTurn as { defeated: boolean; winner: string | null; status: string };
+      expect(mTurn.defeated).toBe(true);
+      expect(mTurn.winner).toBe(mPid);
+      expect(mTurn.status).toBe("completed");
+
+      const done = await db.select().from(combats).where(eq(combats.id, started.combatId)).limit(1);
+      expect(done[0]?.status).toBe("completed");
+      expect(done[0]?.winner).toBe(mPid);
+      const playerPart = await db.select().from(combatParticipants).where(and(
+        eq(combatParticipants.combatId, started.combatId),
+        eq(combatParticipants.characterId, host.characterId),
+      )).limit(1);
+      expect(playerPart[0]!.hp).toBe(0);
+      expect(playerPart[0]!.alive).toBe(false);
+
+      // No victory reward for the defeated player.
+      const claims = await db.select().from(rewardClaims).where(eq(rewardClaims.characterId, host.characterId));
+      expect(claims.filter((c) => c.rewardKey === `combat:${started.combatId}`)).toHaveLength(0);
+
+      // Completed combat rejects further monster resolution + player attacks.
+      await expect(svc.resolveMonsterTurn(host.userId, sessionId)).rejects.toThrow();
+      await expect(svc.attack(host.userId, sessionId, host.characterId, mPid)).rejects.toThrow();
+
+      // Reconnect reconstructs the defeat state.
+      const snap = await getGameSnapshot(db, host.userId, sessionId);
+      expect(snap.combat?.status).toBe("completed");
+      expect(snap.combat?.winner).toBe(mPid);
+      expect(snap.combat?.combatTurnType).toBe("completed");
+      const defeated = snap.combat?.participants.find((p) => p.characterId === host.characterId);
+      expect(defeated?.alive).toBe(false);
     }, 30000);
   });
 });

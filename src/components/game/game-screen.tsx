@@ -188,10 +188,21 @@ export function GameScreen({ sessionId }: { sessionId: string }) {
                 );
               })}
             </ul>
+            {combat.status === "active" && combat.combatTurnType === "monster" && (
+              <p className="mt-3 text-sm font-medium text-amber-300">Enemy turn…</p>
+            )}
             {combat.status === "completed" && (
-              <p className="mt-3 text-sm font-medium text-emerald-400">
-                Victory — winner {monsterForParticipant(combat.winner ?? "")?.name ?? combat.winner?.slice(0, 8) ?? "unknown"}
-              </p>
+              isMonsterParticipant(combat.winner ?? "")
+                ? (
+                  <p className="mt-3 text-sm font-medium text-red-400">
+                    Defeat — the enemy won.
+                  </p>
+                )
+                : (
+                  <p className="mt-3 text-sm font-medium text-emerald-400">
+                    Victory — winner {combat.winner?.slice(0, 8) ?? "unknown"}
+                  </p>
+                )
             )}
             {canAttack && (
               <button
@@ -208,6 +219,9 @@ export function GameScreen({ sessionId }: { sessionId: string }) {
               >
                 Attack
               </button>
+            )}
+            {combat.status === "active" && combat.combatTurnType !== "monster" && !canAttack && meCombatant && (
+              <p className="mt-3 text-xs text-zinc-500">Waiting for the active combatant…</p>
             )}
           </Section>
         )}

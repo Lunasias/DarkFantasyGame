@@ -11,6 +11,7 @@ import {
   persistCombatAttack,
   persistCombatStart,
   persistInventorySet,
+  persistMonsterAttack,
   persistMove,
   persistReward,
   persistShopBuy,
@@ -40,7 +41,9 @@ import {
   encounterForNode,
   monsterParticipantId,
   encounterRewardFor,
+  isMonsterParticipant,
 } from "../../game/content";
+import { chooseMonsterAction } from "../../game/combat";
 import type { RealtimeTransport } from "../transport";
 
 /**
@@ -142,11 +145,11 @@ export class GameplayService {
   /**
    * Authoritative attack. Combat uses the combat's own active combatant (and
    * participant membership + ownership) as the authority — NOT the session's
-   * turn-based active player, so PvE encounters resolve correctly. Applies
-   * server-derived damage from the snapshot-at-start effective stats, persists
-   * HP/combat-turn/victory transactionally, and on victory grants the reward
-   * exactly once (durable reward_claims idempotency). For a PvE encounter the
-   * monster's defined reward is used; otherwise the default victory reward.
+   * turn-based active player. Applies server-derived damage and persists HP /
+   * combat-turn / victory transactionally. On player victory it grants the PvE
+   * (or default) reward exactly once. If the monster survives and becomes the
+   * active combatant, the server resolves that monster turn once (bounded: one
+   * counter-attack per player action) and returns the full round.
    */
   async attack(actorId: string, sessionId: string, characterId: string, targetId: string) {
     const roomId = await this.assertSessionAccess(actorId, sessionId);
@@ -166,6 +169,7 @@ export class GameplayService {
     });
 
     let reward: { alreadyClaimed: boolean } | null = null;
+    let monsterTurn: unknown = null;
     if (result.victory) {
       const participants = await this.db.select().from(combatParticipants)
         .where(eq(combatParticipants.combatId, state.combat.id));
@@ -178,6 +182,14 @@ export class GameplayService {
         items: [],
         itemDrops: true,
       });
+      await this.publish(roomId, "COMBAT_VICTORY", { combatId: state.combat.id, winner: result.winner, characterId });
+    } else {
+      // Player attack landed; if the monster is now the active combatant, the
+      // server resolves that monster turn exactly once (no recursive loop).
+      const after = await loadGameState(this.db, sessionId);
+      if (after.combat?.activeCombatant && isMonsterParticipant(after.combat.activeCombatant)) {
+        monsterTurn = await this.runMonsterTurn(roomId, sessionId, after.combat.id);
+      }
     }
     return {
       damage: result.damage,
@@ -186,7 +198,53 @@ export class GameplayService {
       victory: result.victory,
       winner: result.winner,
       reward,
+      monsterTurn,
     };
+  }
+
+  /** Server-authoritative monster turn resolution (idempotent by combat state). */
+  async resolveMonsterTurn(actorId: string, sessionId: string) {
+    const roomId = await this.assertSessionAccess(actorId, sessionId);
+    const state = await loadGameState(this.db, sessionId);
+    if (!state.combat) throw new AppError("INVALID_ACTION", "No active combat");
+    return this.runMonsterTurn(roomId, sessionId, state.combat.id);
+  }
+
+  /**
+   * Resolve the current monster turn: select the target server-side via the
+   * deterministic AI, persist the counter-attack transactionally, derive damage
+   * from persisted stats, and publish the authoritative result. Idempotent: if
+   * it is not the monster's turn (or combat is complete) it is rejected.
+   */
+  private async runMonsterTurn(roomId: string, sessionId: string, combatId: string) {
+    const combat = await loadGameState(this.db, sessionId);
+    const c = combat.combat;
+    if (!c) throw new AppError("INVALID_ACTION", "No active combat");
+    if (c.status !== "active") throw new AppError("INVALID_ACTION", "Combat has completed");
+    const active = c.activeCombatant;
+    if (!active || !isMonsterParticipant(active)) throw new AppError("INVALID_ACTION", "It is not the monster's turn");
+
+    const parts = await this.db.select().from(combatParticipants)
+      .where(eq(combatParticipants.combatId, combatId));
+    // The AI only ever considers living player participants (never monsters).
+    const instants = parts
+      .filter((p) => !isMonsterParticipant(p.characterId))
+      .map((p) => ({ participantId: p.characterId, alive: p.alive }));
+    const decision = chooseMonsterAction(active, instants, { rng: createRng() });
+    if (decision.action === "none") {
+      return { action: "none", targetParticipantId: null, damage: 0, defeated: false, winner: null, activeCombatant: active, status: "active" };
+    }
+
+    const result = await persistMonsterAttack(this.db, {
+      combatId,
+      targetId: decision.targetParticipantId as string,
+    });
+    await this.publish(roomId, "MONSTER_ATTACK", {
+      combatId, monsterId: active,
+      targetParticipantId: decision.targetParticipantId,
+      damage: result.damage, defeated: result.defeated, status: result.status,
+    });
+    return { action: "attack" as const, ...result, targetParticipantId: decision.targetParticipantId };
   }
 
   /**

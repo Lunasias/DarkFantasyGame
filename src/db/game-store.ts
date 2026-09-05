@@ -336,3 +336,58 @@ export async function persistCombatAttack(db: Db, input: {
     return { damage, defenderHealth: newHp, defeated, victory, winner };
   });
 }
+
+/**
+ * Authoritative monster attack within one transaction. Validates the combat is
+ * still active, the active combatant is a monster participant, and the target
+ * is a living (non-monster) participant. Damage is server-derived:
+ * `max(1, monsterAttack - targetDefense)` from the persisted snapshot stats. On
+ * a target defeat the combat completes with the monster as winner (no player
+ * reward); otherwise the active combatant returns to the target (the player)
+ * and the combat turn/state advance. Idempotent by combat state: a second call
+ * after the turn has resolved (or a completed combat) is rejected.
+ */
+export async function persistMonsterAttack(db: Db, input: {
+  combatId: string;
+  targetId: string;
+}): Promise<{ damage: number; defenderHealth: number; defeated: boolean; winner: string | null; activeCombatant: string | null; status: string }> {
+  return db.transaction(async (tx) => {
+    const exec = tx as unknown as Db;
+    const [combat] = await exec.select().from(combats).where(eq(combats.id, input.combatId)).for("update").limit(1);
+    if (!combat) throw new GameError("INVALID_ACTION", "Combat not found");
+    if (combat.status !== "active") throw new GameError("INVALID_ACTION", "Combat has completed");
+    if (!combat.activeCombatant || !combat.activeCombatant.startsWith("monster:")) {
+      throw new GameError("NOT_ACTIVE_PLAYER", "It is not the monster's turn");
+    }
+
+    const [monster] = await exec.select().from(combatParticipants)
+      .where(and(eq(combatParticipants.combatId, input.combatId), eq(combatParticipants.characterId, combat.activeCombatant)))
+      .for("update").limit(1);
+    const [target] = await exec.select().from(combatParticipants)
+      .where(and(eq(combatParticipants.combatId, input.combatId), eq(combatParticipants.characterId, input.targetId)))
+      .for("update").limit(1);
+    if (!monster || monster.characterId === input.targetId) throw new GameError("INVALID_ACTION", "Invalid monster combatant");
+    if (!target || target.characterId.startsWith("monster:")) throw new GameError("INVALID_ACTION", "Invalid monster target");
+    if (!target.alive) throw new GameError("INVALID_ACTION", "Target is already defeated");
+
+    const damage = Math.max(1, monster.attack - target.defense);
+    const newHp = Math.max(0, target.hp - damage);
+    const defeated = newHp === 0;
+    await exec.update(combatParticipants).set({ hp: newHp, alive: !defeated }).where(eq(combatParticipants.id, target.id));
+
+    if (defeated) {
+      // Player defeated → combat completed with the monster as winner; no reward.
+      await exec.update(combats).set({
+        status: "completed", winner: monster.characterId, activeCombatant: null,
+        stateVersion: combat.stateVersion + 1,
+      }).where(eq(combats.id, input.combatId));
+      return { damage, defenderHealth: newHp, defeated, winner: monster.characterId, activeCombatant: null, status: "completed" };
+    }
+
+    // Monster saved: active combatant returns to the player, turn/state advance.
+    await exec.update(combats).set({
+      activeCombatant: input.targetId, combatTurn: combat.combatTurn + 1, stateVersion: combat.stateVersion + 1,
+    }).where(eq(combats.id, input.combatId));
+    return { damage, defenderHealth: newHp, defeated, winner: null, activeCombatant: input.targetId, status: "active" };
+  });
+}

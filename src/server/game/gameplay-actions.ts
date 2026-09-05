@@ -59,6 +59,18 @@ export async function startEncounterAction(
   });
 }
 
+/** Resolve a pending server-authoritative monster turn (idempotent). */
+export async function resolveMonsterTurnAction(
+  sessionId: string,
+): Promise<ApiResult<unknown>> {
+  return runAction(async () => {
+    const user = await requireUser();
+    const db = await getDb();
+    const service = new GameplayService(db, getRealtimeTransport());
+    return service.resolveMonsterTurn(user.id, sessionId);
+  });
+}
+
 async function run(userId: string, fn: (svc: GameplayService) => Promise<unknown>): Promise<ApiResult<unknown>> {
   const db = await getDb();
   return runAction(async () => fn(new GameplayService(db, getRealtimeTransport())));

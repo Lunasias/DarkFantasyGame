@@ -35,6 +35,7 @@ export interface GameSnapshot {
     readonly winner: string | null;
     readonly combatTurn: number;
     readonly stateVersion: number;
+    readonly combatTurnType: "player" | "monster" | "completed";
     readonly participants: readonly {
       readonly characterId: string; readonly hp: number; readonly maxHp: number;
       readonly attack: number; readonly defense: number; readonly alive: boolean;
