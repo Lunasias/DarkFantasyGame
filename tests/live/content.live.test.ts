@@ -1,0 +1,228 @@
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { drizzle } from "drizzle-orm/node-postgres";
+import { eq, like } from "drizzle-orm";
+import { Pool } from "pg";
+import * as schema from "@/db/schema";
+import { users } from "@/db/schema/users";
+import { playerProfiles } from "@/db/schema/player-profiles";
+import { characters } from "@/db/schema/characters";
+import { gameSessions } from "@/db/schema/game-sessions";
+import { rooms } from "@/db/schema/rooms";
+import { roomPlayers } from "@/db/schema/room-players";
+import { items } from "@/db/schema/items";
+import { boardPositions } from "@/db/schema/board-positions";
+import { combats } from "@/db/schema/combats";
+import { createId } from "@/game/engine/id";
+import { createRng } from "@/game/engine/rng";
+import {
+  acceptQuest,
+  completeQuest,
+  completeDungeon,
+  enterDungeon,
+  resolveWorldEvent,
+  syncQuestProgress,
+  getCharacterContentState,
+} from "@/db/content-store";
+import { GameplayService } from "@/server/game/gameplay";
+import { getGameSnapshot } from "@/server/game/game-state";
+
+const ENABLED = !!process.env.DATABASE_URL && !process.env.CI;
+let pool: Pool;
+let db: ReturnType<typeof drizzle<typeof schema>>;
+const testEmails: string[] = [];
+const sessionIds: string[] = [];
+const seededItems = ["grave_dust"];
+
+function strip(url: string) {
+  return url.replace("&channel_binding=require", "");
+}
+
+async function createChar(unique: string) {
+  const email = `live_p19_${unique}@x.com`;
+  testEmails.push(email);
+  const userId = createId();
+  const profileId = createId();
+  const id = createId();
+  await db.insert(users).values({ id: userId, email, displayName: unique });
+  await db.insert(playerProfiles).values({ id: profileId, userId, playerName: unique, level: 1, totalGold: 0 });
+  await db.insert(characters).values({ id, profileId, name: unique, archetype: "adventurer", level: 1, experience: 0, gold: 100, health: 100, maxHealth: 100 });
+  return { userId, profileId, characterId: id };
+}
+
+/** Create an in-game room + session with two members at the given turns. */
+async function setupSession(host: { userId: string }, guest: { userId: string }, turn = 1) {
+  const roomId = createId();
+  const sessionId = createId();
+  sessionIds.push(sessionId);
+  await db.insert(rooms).values({ id: roomId, roomCode: `P19${createId().slice(0, 4)}`, name: "P19", hostUserId: host.userId, status: "in_game", maxPlayers: 4 });
+  await db.insert(roomPlayers).values({ id: createId(), roomId, userId: host.userId, slot: 0, ready: true, isHost: true, connected: true });
+  await db.insert(roomPlayers).values({ id: createId(), roomId, userId: guest.userId, slot: 1, ready: true, isHost: false, connected: true });
+  await db.insert(gameSessions).values({ id: sessionId, roomId, phase: "active", currentTurnNumber: turn, stateVersion: 0 });
+  return { roomId, sessionId };
+}
+
+/** Place a character at a board node within a session. */
+async function placeAt(sessionId: string, characterId: string, nodeId: string) {
+  await db.insert(boardPositions).values({ id: createId(), gameSessionId: sessionId, characterId, nodeId })
+    .onConflictDoUpdate({ target: [boardPositions.gameSessionId, boardPositions.characterId], set: { nodeId } });
+}
+
+/** Record a combat won by `winner` so the defeat objective derives progress. */
+async function recordWin(characterId: string) {
+  const sessionId = createId();
+  sessionIds.push(sessionId);
+  await db.insert(gameSessions).values({ id: sessionId, roomId: null, phase: "active", currentTurnNumber: 0, stateVersion: 0 });
+  await db.insert(combats).values({ id: createId(), gameSessionId: sessionId, status: "completed", winner: characterId, activeCombatant: null, combatTurn: 0, stateVersion: 1 });
+}
+
+describe.runIf(ENABLED)("Phase 19 content persistence (real Neon)", () => {
+  beforeAll(async () => {
+    pool = new Pool({ connectionString: strip(process.env.DATABASE_URL as string), max: 6 });
+    db = drizzle(pool, { schema });
+    await db.insert(items).values({ id: "grave_dust", name: "Grave Dust", description: "d", category: "material", stackable: true });
+  });
+
+  afterAll(async () => {
+    if (db) {
+      if (sessionIds.length) await db.delete(gameSessions).where(eq(gameSessions.id, sessionIds[0]));
+      if (testEmails.length) await db.delete(users).where(like(users.email, "live_p19_%"));
+      for (const id of seededItems) await db.delete(items).where(eq(items.id, id));
+    }
+    await pool?.end?.();
+  }, 30000);
+
+  it("persists quest acceptance, progress, and content snapshot state", async () => {
+    const { characterId } = await createChar("accept");
+    await acceptQuest(db, { characterId, questId: "reach_the_village" });
+    const state = await getCharacterContentState(db, characterId);
+    expect(state.quests).toHaveLength(1);
+    expect(state.quests[0].status).toBe("accepted");
+    // accepts are idempotent
+    const again = await acceptQuest(db, { characterId, questId: "reach_the_village" });
+    expect(again.accepted).toBe(false);
+  }, 30000);
+
+  it("derives objective progress from authoritative sources and completes exactly once", async () => {
+    const { characterId } = await createChar("derive");
+    await acceptQuest(db, { characterId, questId: "first_blood" });
+    await recordWin(characterId); // one defeat >= objective amount 1
+    // Reach-objective quest: place character at node C
+    await acceptQuest(db, { characterId, questId: "reach_the_village" });
+
+    const cmp = await completeQuest(db, { characterId, questId: "first_blood", nodeId: "A", rng: createRng(1) });
+    expect(cmp.met).toBe(true);
+    expect(cmp.reward.alreadyClaimed).toBe(false);
+    expect(cmp.reward.experienceGranted).toBe(100);
+    // completing again is rejected (durable state)
+    await expect(completeQuest(db, { characterId, questId: "first_blood", nodeId: "A" })).rejects.toThrow();
+  }, 30000);
+
+  it("rejects completing an unaccepted or unmet quest", async () => {
+    const { characterId } = await createChar("unmet");
+    await expect(completeQuest(db, { characterId, questId: "reach_the_village", nodeId: "A" })).rejects.toThrow(); // not accepted
+    await acceptQuest(db, { characterId, questId: "reach_the_village" });
+    await expect(completeQuest(db, { characterId, questId: "reach_the_village", nodeId: "A" })).rejects.toThrow(); // not at node C
+  }, 30000);
+
+  it("resolves a world event once (success) and rejects a re-roll", async () => {
+    const { characterId } = await createChar("event");
+    // cursed_shrine is on node B. Content-store validates position from the nodeId
+    // supplied by the server (never the client); directly resolve with nodeId B.
+    const out = await resolveWorldEvent(db, { characterId, eventId: "cursed_shrine", nodeId: "B", rng: createRng(1) });
+    expect(["success", "missed"]).toContain(out.outcome);
+    // The claim is durable: a second resolve is always rejected regardless of outcome.
+    await expect(resolveWorldEvent(db, { characterId, eventId: "cursed_shrine", nodeId: "B", rng: createRng(2) })).rejects.toThrow();
+    // Wrong node rejected.
+    await expect(resolveWorldEvent(db, { characterId, eventId: "cursed_shrine", nodeId: "E" })).rejects.toThrow();
+  }, 30000);
+
+  it("enters + clears a dungeon once and rejects duplicate clearance", async () => {
+    const { characterId } = await createChar("dungeon");
+    await enterDungeon(db, { characterId, dungeonId: "crypt_of_ash", nodeId: "D" });
+    const cmp = await completeDungeon(db, { characterId, dungeonId: "crypt_of_ash", rng: createRng(5) });
+    expect(cmp.reward.alreadyClaimed).toBe(false);
+    expect(cmp.reward.experienceGranted).toBe(300);
+    const state = await getCharacterContentState(db, characterId);
+    expect(state.dungeons[0].status).toBe("completed");
+    await expect(completeDungeon(db, { characterId, dungeonId: "crypt_of_ash" })).rejects.toThrow();
+    // entering at a wrong node is rejected
+    await expect(enterDungeon(db, { characterId, dungeonId: "crypt_of_ash", nodeId: "B" })).rejects.toThrow();
+  }, 30000);
+
+  it("concurrent identical quest completions grant exactly one reward", async () => {
+    const { characterId } = await createChar("cc");
+    await acceptQuest(db, { characterId, questId: "first_blood" });
+    await recordWin(characterId);
+    const [a, b] = await Promise.allSettled([
+      completeQuest(db, { characterId, questId: "first_blood", nodeId: "A", rng: createRng(1) }),
+      completeQuest(db, { characterId, questId: "first_blood", nodeId: "A", rng: createRng(2) }),
+    ]);
+    const fulfilled = [a, b].filter((r) => r.status === "fulfilled");
+    const granted = fulfilled.filter((r) => r.status === "fulfilled" && r.value.reward && !r.value.reward.alreadyClaimed);
+    expect(granted.length).toBe(1);
+    const row = await db.select().from(characters).where(eq(characters.id, characterId)).limit(1);
+    expect(row[0]?.experience).toBe(100);
+    // exactly one reward_claim (single EXP grant)
+  }, 30000);
+
+  it("syncQuestProgress is durable and replays idempotently", async () => {
+    const { characterId } = await createChar("sync");
+    await acceptQuest(db, { characterId, questId: "reach_the_village" });
+    const s1 = await syncQuestProgress(db, { characterId, questId: "reach_the_village", nodeId: "C" });
+    expect(s1.met).toBe(true);
+    const s2 = await syncQuestProgress(db, { characterId, questId: "reach_the_village", nodeId: "C" });
+    expect(s2.progress.reach).toBe(1);
+  }, 30000);
+
+  describe("authorization / IDOR through GameplayService", () => {
+    it("rejects non-member session access and wrong-owner actions", async () => {
+      const host = await createChar("sec_host");
+      const guest = await createChar("sec_guest");
+      const outsider = await createChar("sec_out");
+      const { sessionId } = await setupSession(host, guest);
+
+      const svc = new GameplayService(db);
+      // non-member -> session membership denied
+      await expect(svc.acceptQuest(outsider.userId, sessionId, host.characterId, "first_blood")).rejects.toThrow();
+      // wrong owner: guest acting on host's character (guest IS a member but does not own host char)
+      await expect(svc.acceptQuest(guest.userId, sessionId, host.characterId, "first_blood")).rejects.toThrow();
+      // owner success
+      const res = await svc.acceptQuest(host.userId, sessionId, host.characterId, "first_blood");
+      expect(res.accepted).toBe(true);
+    }, 30000);
+
+    it("validates town node and dungeon entry node against authoritative position", async () => {
+      const host = await createChar("town_host");
+      const guest = await createChar("town_guest");
+      const { sessionId } = await setupSession(host, guest);
+      await placeAt(sessionId, host.characterId, "B"); // host at B
+
+      const svc = new GameplayService(db);
+      // ashenfall town is at node C; reject at B
+      await expect(svc.enterTown(host.userId, sessionId, host.characterId, "ashenfall")).rejects.toThrow();
+      // move to C then succeed
+      await placeAt(sessionId, host.characterId, "C");
+      const town = await svc.enterTown(host.userId, sessionId, host.characterId, "ashenfall");
+      expect(town.townId).toBe("ashenfall");
+      // dungeon crypt_of_ash is at D; reject at C, succeed at D
+      await expect(svc.enterDungeon(host.userId, sessionId, host.characterId, "crypt_of_ash")).rejects.toThrow();
+      await placeAt(sessionId, host.characterId, "D");
+      const entered = await svc.enterDungeon(host.userId, sessionId, host.characterId, "crypt_of_ash");
+      expect(entered.entered).toBe(true);
+    }, 30000);
+
+    it("exposes a complete snapshot with content and rejects a non-member", async () => {
+      const host = await createChar("snap_host");
+      const guest = await createChar("snap_guest");
+      const outsider = await createChar("snap_out");
+      const { sessionId } = await setupSession(host, guest);
+      await acceptQuest(db, { characterId: host.characterId, questId: "first_blood" });
+
+      const snap = await getGameSnapshot(db, host.userId, sessionId);
+      expect(snap.content).toBeTruthy();
+      expect(snap.content[host.characterId]).toBeTruthy();
+      expect(snap.content[host.characterId].quests[0].questId).toBe("first_blood");
+      await expect(getGameSnapshot(db, outsider.userId, sessionId)).rejects.toThrow();
+    }, 30000);
+  });
+});

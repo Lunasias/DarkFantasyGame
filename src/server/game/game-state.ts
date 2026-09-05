@@ -8,6 +8,7 @@ import { playerProfiles } from "../../db/schema/player-profiles";
 import { characterInventory } from "../../db/schema/character-inventory";
 import { combatParticipants } from "../../db/schema/combat-participants";
 import { loadGameState } from "../../db/game-store";
+import { getCharacterContentState, type CharacterContentState } from "../../db/content-store";
 import { AppError } from "../errors";
 import { createCharacter, type CharacterStats } from "../../game/engine/character";
 import { effectiveStatsFor } from "../../game/jobs";
@@ -99,6 +100,13 @@ export async function getGameSnapshot(db: Db, actorId: string, sessionId: string
     };
   }
 
+  // Authoritative, per-member content state (quests / events / dungeons). Only
+  // exposed for member characters; never leaks another user's private state.
+  const content: Record<string, CharacterContentState> = {};
+  for (const ch of charactersOut) {
+    content[ch.characterId] = await getCharacterContentState(db, ch.characterId);
+  }
+
   return {
     sessionId,
     roomId: session.roomId,
@@ -110,5 +118,6 @@ export async function getGameSnapshot(db: Db, actorId: string, sessionId: string
     positions: state.positions,
     characters: charactersOut,
     combat,
+    content,
   };
 }

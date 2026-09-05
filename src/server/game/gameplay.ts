@@ -23,6 +23,15 @@ import { addExperience } from "../../game/progression";
 import { addGold, getGold } from "../../game/economy/gold";
 import { equip, getEquipped } from "../../game/items/equipment";
 import { createDefaultBoard, BoardEngine } from "../../game/board";
+import {
+  acceptQuest,
+  completeQuest,
+  completeDungeon,
+  enterDungeon,
+  resolveWorldEvent,
+  syncQuestProgress,
+} from "../../db/content-store";
+import { getTown } from "../../game/content";
 import type { RealtimeTransport } from "../transport";
 
 /**
@@ -213,5 +222,83 @@ export class GameplayService {
     addGold(c, amount);
     await persistCharacter(this.db, { id: characterId, jobId: c.jobId, level: c.level, experience: c.experience, gold: c.gold, health: char.health, maxHealth: char.maxHealth });
     return { gold: getGold(c) };
+  }
+
+  /** Authoritative current board node for a character in a session (or null). */
+  private async characterNode(sessionId: string, characterId: string): Promise<string | null> {
+    const state = await loadGameState(this.db, sessionId);
+    return state.positions.find((p) => p.characterId === characterId)?.nodeId ?? null;
+  }
+
+  /** Durable quest acceptance (idempotent). */
+  async acceptQuest(actorId: string, sessionId: string, characterId: string, questId: string) {
+    const roomId = await this.assertSessionAccess(actorId, sessionId);
+    await this.assertCharacterOwner(actorId, characterId);
+    const res = await acceptQuest(this.db, { characterId, questId });
+    await this.publish(roomId, "QUEST_ACCEPTED", { characterId, questId });
+    return res;
+  }
+
+  /** Server-derived quest progress reconcile (thin action; no client progress). */
+  async progressQuest(actorId: string, sessionId: string, characterId: string, questId: string) {
+    const roomId = await this.assertSessionAccess(actorId, sessionId);
+    await this.assertCharacterOwner(actorId, characterId);
+    const nodeId = await this.characterNode(sessionId, characterId);
+    const res = await syncQuestProgress(this.db, { characterId, questId, nodeId });
+    await this.publish(roomId, "QUEST_PROGRESS", { characterId, questId, progress: res.progress });
+    return res;
+  }
+
+  /** Complete an accepted quest once objectives are met; reward granted exactly once. */
+  async completeQuest(actorId: string, sessionId: string, characterId: string, questId: string) {
+    const roomId = await this.assertSessionAccess(actorId, sessionId);
+    await this.assertCharacterOwner(actorId, characterId);
+    const nodeId = await this.characterNode(sessionId, characterId);
+    const res = await completeQuest(this.db, { characterId, questId, nodeId });
+    await this.publish(roomId, "QUEST_COMPLETED", { characterId, questId, reward: res.reward });
+    return res;
+  }
+
+  /** Resolve a world event at the character's authoritative node (server RNG). */
+  async resolveWorldEvent(actorId: string, sessionId: string, characterId: string, eventId: string) {
+    const roomId = await this.assertSessionAccess(actorId, sessionId);
+    await this.assertCharacterOwner(actorId, characterId);
+    const nodeId = await this.characterNode(sessionId, characterId);
+    const res = await resolveWorldEvent(this.db, { characterId, eventId, nodeId });
+    await this.publish(roomId, "WORLD_EVENT_RESOLVED", {
+      characterId, eventId, outcome: res.outcome, reward: res.reward,
+    });
+    return res;
+  }
+
+  /** Enter a town only from its board node (no durable state). */
+  async enterTown(actorId: string, sessionId: string, characterId: string, townId: string) {
+    const roomId = await this.assertSessionAccess(actorId, sessionId);
+    await this.assertCharacterOwner(actorId, characterId);
+    const town = getTown(townId);
+    if (!town) throw new AppError("INVALID_ACTION", "Unknown town");
+    const nodeId = await this.characterNode(sessionId, characterId);
+    if (nodeId !== town.nodeId) throw new AppError("INVALID_ACTION", "You are not at this town");
+    await this.publish(roomId, "TOWN_ENTERED", { characterId, townId, nodeId });
+    return { townId, nodeId, services: town.services };
+  }
+
+  /** Enter a dungeon from its entry node (durable). */
+  async enterDungeon(actorId: string, sessionId: string, characterId: string, dungeonId: string) {
+    const roomId = await this.assertSessionAccess(actorId, sessionId);
+    await this.assertCharacterOwner(actorId, characterId);
+    const nodeId = await this.characterNode(sessionId, characterId);
+    const res = await enterDungeon(this.db, { characterId, dungeonId, nodeId });
+    await this.publish(roomId, "DUNGEON_ENTERED", { characterId, dungeonId });
+    return res;
+  }
+
+  /** Clear an entered dungeon; reward granted exactly once (durable). */
+  async completeDungeon(actorId: string, sessionId: string, characterId: string, dungeonId: string) {
+    const roomId = await this.assertSessionAccess(actorId, sessionId);
+    await this.assertCharacterOwner(actorId, characterId);
+    const res = await completeDungeon(this.db, { characterId, dungeonId });
+    await this.publish(roomId, "DUNGEON_COMPLETED", { characterId, dungeonId, reward: res.reward });
+    return res;
   }
 }

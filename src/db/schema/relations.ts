@@ -1,6 +1,10 @@
 import { relations } from "drizzle-orm";
 import { characterInventory } from "./character-inventory";
 import { characters } from "./characters";
+import { characterQuests } from "./character-quests";
+import { questProgress } from "./quest-progress";
+import { worldEventClaims } from "./world-event-claims";
+import { dungeonEntries } from "./dungeon-entries";
 import { gameEvents } from "./game-events";
 import { shopInventory } from "./shop-inventory";
 import { gameSessions } from "./game-sessions";
@@ -54,6 +58,38 @@ export const charactersRelations = relations(characters, ({ one, many }) => ({
     references: [playerProfiles.id],
   }),
   inventory: many(characterInventory),
+  quests: many(characterQuests),
+  questProgress: many(questProgress),
+  worldEventClaims: many(worldEventClaims),
+  dungeonEntries: many(dungeonEntries),
+}));
+
+export const characterQuestsRelations = relations(characterQuests, ({ one }) => ({
+  character: one(characters, {
+    fields: [characterQuests.characterId],
+    references: [characters.id],
+  }),
+}));
+
+export const questProgressRelations = relations(questProgress, ({ one }) => ({
+  character: one(characters, {
+    fields: [questProgress.characterId],
+    references: [characters.id],
+  }),
+}));
+
+export const worldEventClaimsRelations = relations(worldEventClaims, ({ one }) => ({
+  character: one(characters, {
+    fields: [worldEventClaims.characterId],
+    references: [characters.id],
+  }),
+}));
+
+export const dungeonEntriesRelations = relations(dungeonEntries, ({ one }) => ({
+  character: one(characters, {
+    fields: [dungeonEntries.characterId],
+    references: [characters.id],
+  }),
 }));
 
 export const characterInventoryRelations = relations(

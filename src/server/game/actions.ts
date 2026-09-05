@@ -40,6 +40,18 @@ export interface GameSnapshot {
       readonly attack: number; readonly defense: number; readonly alive: boolean;
     }[];
   } | null;
+  readonly content: Readonly<Record<string, {
+    readonly quests: readonly {
+      readonly questId: string;
+      readonly status: "accepted" | "completed";
+      readonly objectives: readonly {
+        readonly objectiveId: string; readonly target: string;
+        readonly amount: number; readonly progress: number; readonly done: boolean;
+      }[];
+    }[];
+    readonly worldEvents: readonly { readonly eventId: string; readonly outcome: "success" | "missed" }[];
+    readonly dungeons: readonly { readonly dungeonId: string; readonly status: "entered" | "completed"; readonly encounter: number }[];
+  }>>;
 }
 
 /** Authenticated resume: loads the authoritative DB snapshot for a session. */

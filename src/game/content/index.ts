@@ -114,6 +114,15 @@ export const allWorldEvents = (): readonly WorldEventDefinition[] => WORLD_EVENT
 export const allTowns = (): readonly TownDefinition[] => TOWN_DEFINITIONS;
 export const allDungeons = (): readonly DungeonDefinition[] => DUNGEON_DEFINITIONS;
 
+export {
+  questRewardKey,
+  eventRewardKey,
+  dungeonRewardKey,
+  resolveRewardItems,
+  objectiveMet,
+  allObjectivesMet,
+} from "./rewards";
+
 export type ContentEventType =
   | "QUEST_ACCEPTED"
   | "QUEST_PROGRESS"
