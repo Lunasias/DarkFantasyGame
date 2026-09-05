@@ -1,7 +1,9 @@
 import { relations } from "drizzle-orm";
+import { characterInventory } from "./character-inventory";
 import { characters } from "./characters";
 import { gameEvents } from "./game-events";
 import { gameSessions } from "./game-sessions";
+import { items } from "./items";
 import { playerProfiles } from "./player-profiles";
 import { roomEvents } from "./room-events";
 import { roomPlayers } from "./room-players";
@@ -44,12 +46,27 @@ export const playerProfilesRelations = relations(
   }),
 );
 
-export const charactersRelations = relations(characters, ({ one }) => ({
+export const charactersRelations = relations(characters, ({ one, many }) => ({
   profile: one(playerProfiles, {
     fields: [characters.profileId],
     references: [playerProfiles.id],
   }),
+  inventory: many(characterInventory),
 }));
+
+export const characterInventoryRelations = relations(
+  characterInventory,
+  ({ one }) => ({
+    character: one(characters, {
+      fields: [characterInventory.characterId],
+      references: [characters.id],
+    }),
+    item: one(items, {
+      fields: [characterInventory.itemId],
+      references: [items.id],
+    }),
+  }),
+);
 
 export const roomsRelations = relations(rooms, ({ one, many }) => ({
   host: one(users, {

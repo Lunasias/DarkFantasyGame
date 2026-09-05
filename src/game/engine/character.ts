@@ -30,6 +30,10 @@ export class Character {
   level: number;
   /** Total experience gained (starts at 0). */
   experience: number;
+  /** Owned items: itemId → quantity (authoritative inventory state). */
+  readonly inventory = new Map<string, number>();
+  /** Equipped slot → itemId (authoritative equipment state). */
+  readonly equipment = new Map<string, string>();
 
   constructor(
     id: CharacterId,
