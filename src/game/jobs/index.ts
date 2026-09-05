@@ -1,6 +1,7 @@
 import type { Character, CharacterStats } from "../engine/character";
 import { GameError } from "../engine/errors";
 import { combatantFrom, type Combatant } from "../combat/combat-engine";
+import { levelStatBonuses } from "../progression/experience";
 import { JOB_DEFINITIONS, type JobDefinition } from "./jobs";
 import { resolveEffectiveStats } from "./stats";
 
@@ -83,11 +84,24 @@ export function assignJob(
   return { job, effectiveStats };
 }
 
-/** Effective stats for a character (base stats + assigned job, if any). */
+/**
+ * The single authoritative stat-resolution path: base stats + assigned job
+ * modifiers + level progression → effective stats. Used by combat adaptation so
+ * the calculation never lives in more than one place. Health is preserved (not
+ * reduced) as maxHealth grows, and never exceeds the new maxHealth.
+ */
 export function effectiveStatsFor(character: Character): CharacterStats {
-  if (!character.jobId) return character.stats;
-  const job = getJob(character.jobId);
-  return job ? resolveEffectiveStats(character.stats, job) : character.stats;
+  const job = character.jobId ? getJob(character.jobId) : null;
+  const base = job ? resolveEffectiveStats(character.stats, job) : character.stats;
+  const bonus = levelStatBonuses(character.level);
+  const maxHealth = base.maxHealth + (bonus.maxHealth ?? 0);
+  return {
+    maxHealth,
+    health: Math.min(base.health + (bonus.health ?? 0), maxHealth),
+    attack: base.attack + (bonus.attack ?? 0),
+    defense: base.defense + (bonus.defense ?? 0),
+    speed: base.speed + (bonus.speed ?? 0),
+  };
 }
 
 /** Adapt a character into a combatant using its authoritative effective stats. */

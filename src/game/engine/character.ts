@@ -26,6 +26,10 @@ export class Character {
   stats: CharacterStats;
   /** Assigned job id (null until a job is selected via the jobs domain). */
   jobId: string | null = null;
+  /** Progression level (starts at 1). */
+  level: number;
+  /** Total experience gained (starts at 0). */
+  experience: number;
 
   constructor(
     id: CharacterId,
@@ -37,6 +41,8 @@ export class Character {
     this.name = name;
     this.archetype = archetype;
     this.stats = stats;
+    this.level = 1;
+    this.experience = 0;
   }
 
   get isAlive(): boolean {

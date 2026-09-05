@@ -15,6 +15,13 @@
       "when": 1788619163437,
       "tag": "0001_clean_raza",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1788623125637,
+      "tag": "0002_blushing_forgotten_one",
+      "breakpoints": true
     }
   ]
 }
