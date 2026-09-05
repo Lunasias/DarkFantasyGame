@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { eq, lt } from "drizzle-orm";
 import type { Db } from "../../db";
 import { createId } from "../../game/engine/id";
 import { playerProfiles } from "../../db/schema/player-profiles";
@@ -9,6 +9,7 @@ import type { RateLimiter } from "../../server/rate-limit/rate-limiter";
 import { SESSION_DURATION_MS } from "./cookie";
 import { hashPassword, verifyPassword } from "./password";
 import type { RegisterInput } from "./schemas";
+import { isSessionExpired } from "./session-policy";
 import { generateSessionToken, hashToken } from "./tokens";
 
 /** Sanitized, client-safe identity (never includes the password hash). */
@@ -24,6 +25,17 @@ export interface AuthResult {
   readonly user: AuthUser;
 }
 
+/** Context supplied by the caller (transport) — never trusted by the client. */
+export interface AuthContext {
+  readonly userAgent?: string;
+  /**
+   * Stable per-client key (typically the client IP) used for rate limiting.
+   * Per-email keys let an attacker enumerate accounts by cycling emails; a
+   * per-client key throttles enumeration and brute-force regardless of email.
+   */
+  readonly rateLimitKey?: string;
+}
+
 /**
  * Server-authoritative authentication. The client never supplies the user id;
  * identity always derives from a validated session token hash stored in the DB.
@@ -32,17 +44,25 @@ export interface AuthResult {
  * SHA-256 hash is persisted), and httpOnly cookies. No secrets in code.
  */
 export class AuthService {
+  /** Lazily-computed hash used to equalize login timing for unknown users. */
+  private dummyHash: string | null = null;
+
   constructor(
     private readonly db: Db,
     private readonly rateLimiter?: RateLimiter,
   ) {}
 
-  async register(input: RegisterInput, userAgent?: string): Promise<AuthResult> {
-    await this.limit(`register:${input.email}`);
+  async register(
+    input: RegisterInput,
+    context: AuthContext = {},
+  ): Promise<AuthResult> {
+    await this.limit(`register:${context.rateLimitKey ?? input.email}`);
     const email = input.email;
 
     const existing = await this.findUserByEmail(email);
     if (existing) {
+      // Generic message: rate limiting + an identical message protects against
+      // straightforward account enumeration (documented tradeoff).
       throw new AppError(
         "VALIDATION_ERROR",
         "An account with this email already exists",
@@ -67,24 +87,29 @@ export class AuthService {
       totalGold: 0,
     });
 
-    return this.createSession(userId, userAgent);
+    return this.createSession(userId, context.userAgent);
   }
 
   async login(
     email: string,
     password: string,
-    userAgent?: string,
+    context: AuthContext = {},
   ): Promise<AuthResult> {
-    await this.limit(`login:${email}`);
+    await this.limit(`login:${context.rateLimitKey ?? email}`);
     const user = await this.findUserByEmail(email);
+
+    // Constant-ish work: for an unknown/failed user we still run a bcrypt
+    // comparison against a throwaway hash so the response time does not reveal
+    // whether the account exists (timing-based enumeration).
     if (!user?.passwordHash) {
+      await verifyPassword(password, await this.getDummyHash());
       throw new AppError("UNAUTHENTICATED", "Invalid email or password");
     }
     const valid = await verifyPassword(password, user.passwordHash);
     if (!valid) {
       throw new AppError("UNAUTHENTICATED", "Invalid email or password");
     }
-    return this.createSession(user.id, userAgent);
+    return this.createSession(user.id, context.userAgent);
   }
 
   /** Validate a session token and return its user, or null when invalid. */
@@ -98,7 +123,7 @@ export class AuthService {
       .limit(1);
     if (!session) return null;
 
-    if (session.expiresAt.getTime() < Date.now()) {
+    if (isSessionExpired(session.expiresAt)) {
       await this.db.delete(sessions).where(eq(sessions.tokenHash, tokenHash));
       return null;
     }
@@ -114,6 +139,27 @@ export class AuthService {
   async logout(token: string | null | undefined): Promise<void> {
     if (!token) return;
     await this.db.delete(sessions).where(eq(sessions.tokenHash, hashToken(token)));
+  }
+
+  /**
+   * Delete all expired sessions. In serverless there is no long-running cron, so
+   * this is called opportunistically (e.g. a low-probability path on auth) and
+   * is also safe to invoke from a scheduled job. `validate` also deletes a
+   * single expired session it encounters, so storage cannot grow unboundedly
+   * between prunes.
+   */
+  async pruneExpiredSessions(now: Date = new Date()): Promise<number> {
+    const result = await this.db
+      .delete(sessions)
+      .where(lt(sessions.expiresAt, now));
+    return result.rowCount ?? 0;
+  }
+
+  private async getDummyHash(): Promise<string> {
+    if (!this.dummyHash) {
+      this.dummyHash = await hashPassword("timing-equalizer");
+    }
+    return this.dummyHash;
   }
 
   private async createSession(

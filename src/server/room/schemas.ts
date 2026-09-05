@@ -17,8 +17,8 @@ export const joinRoomSchema = z.object({
   roomCode: z
     .string()
     .trim()
-    .refine(isValidRoomCode, { message: "Invalid room code" })
-    .transform((code) => code.toUpperCase()),
+    .transform((code) => code.toUpperCase())
+    .refine(isValidRoomCode, { message: "Invalid room code" }),
 });
 
 export const readySchema = z.object({

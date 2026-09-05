@@ -136,9 +136,16 @@ presentation and is always authoritative:
   operations backed by a formal state machine.
 - **Realtime** (`src/server/realtime`) — provider-independent
   `RealtimeTransport`, an in-memory implementation, and an SSE stream; the
-  transport is never the source of truth.
+  transport is never the source of truth. A `DistributedRealtimeTransport`
+  seam (presence + channel lifecycle) is the design target for multi-instance
+  deploy — no provider is wired up yet.
 - **Errors / rate limiting** (`src/server/errors.ts`,
-  `src/server/rate-limit`) — typed `AppError` codes and a `RateLimiter` seam.
+  `src/server/rate-limit`) — typed `AppError` codes and a `RateLimiter` seam
+  (in-memory, single-process). Room authorization decisions are centralized in
+  `src/server/room/authorization.ts` so the read path and SSE never diverge.
+- **Auth hardening** (`src/lib/auth`) — timing-safe login, per-client rate
+  limits, session expiry/rotation policy (`session-policy.ts`), and
+  `pruneExpiredSessions` cleanup.
 
 See [MULTIPLAYER.md](./MULTIPLAYER.md) for the full design.
 

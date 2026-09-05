@@ -7,6 +7,8 @@ import {
 } from "../../../../../db/room-store";
 import { SESSION_COOKIE } from "../../../../../lib/auth/cookie";
 import { getAuthService } from "../../../../../lib/auth/service";
+import { getRateLimiter } from "../../../../../server/rate-limit/service";
+import { requireRoomMember } from "../../../../../server/room/authorization";
 import { getRealtimeTransport } from "../../../../../server/realtime/hub";
 
 export const dynamic = "force-dynamic";
@@ -38,14 +40,23 @@ export async function GET(
     return new Response("Unauthorized", { status: 401 });
   }
 
+  // Rate-limit connection attempts per user (process-local limiter).
+  const limiter = getRateLimiter();
+  const limited = await limiter.consume(`stream:${user.id}`, {
+    limit: 30,
+    windowMs: 60_000,
+  });
+  if (!limited.allowed) {
+    return new Response("Too many connection attempts", { status: 429 });
+  }
+
   const db = await getDb();
   const room = await getRoomViewByCode(db, roomCode.toUpperCase());
   if (!room) {
     return new Response("Room not found", { status: 404 });
   }
-  if (!room.players.some((member) => member.userId === user.id)) {
-    return new Response("Forbidden", { status: 403 });
-  }
+  // Only room members may subscribe (idempotent authorization check).
+  requireRoomMember(room, user.id);
 
   const since = Number(request.nextUrl.searchParams.get("since") ?? "0") || 0;
   const previous = await listRoomEventsAfter(db, room.id, since);

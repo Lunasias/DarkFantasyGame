@@ -151,6 +151,14 @@ query-builder traversal:
 
 All one-to-many endpoints are indexed on their FK column.
 
+## Concurrency & cleanup
+
+The `room_players` unique constraints `(room_id, user_id)` and `(room_id, slot)`,
+the unique `rooms.room_code`, and the unique `room_events(room_id, sequence)`
+are what make concurrent/duplicate room mutations safe — they are enforced by
+the database regardless of application ordering. Expired `sessions` rows are
+removed by `pruneExpiredSessions()` (and opportunistically on validate).
+
 ## Migrations
 
 ```bash

@@ -163,3 +163,99 @@ in_game` atomically.
 > Running the full DB-backed flow requires a real Postgres/Neon instance
 > (`DATABASE_URL`); the local dev daemon serves pages but DB-backed auth/room
 > operations require a configured database.
+
+## Authentication lifecycle (Phase 1.5)
+
+- **Hashing:** `bcryptjs` cost 12 in `users.password_hash`.
+- **Token:** 256-bit random; only its SHA-256 hash is stored (`sessions.token_hash`).
+- **Cookie:** `dfg_session`, `httpOnly`, `sameSite=lax`, `path=/`, `secure` in
+  production, `maxAge` = session duration.
+- **Expiration:** 7 days; `isSessionExpired(expiresAt, now)` (pure policy) is
+  checked on every validate; the expired session is deleted.
+- **Revocation/logout:** `logout` deletes the session row + clears the cookie.
+- **Rotation:** a brand new token is issued on every `login`/`register` (a stale
+  pre-auth cookie is never reused), so there is no session-fixation window.
+- **Cleanup:** `pruneExpiredSessions()` removes all expired rows (safe to run
+  from a scheduled task); `validate` also deletes the single session it rejects.
+- **Brute force / enumeration:** login returns a single generic message for
+  unknown-email vs wrong-password, and performs a dummy bcrypt comparison for
+  unknown users so response timing does not reveal account existence. Both
+  `login` and `register` are rate-limited by a per-client key (client IP).
+- **CSRF:** Next.js server actions enforce Origin checks by default; the
+  state-changing cookie is `SameSite=Lax`. (A production fallback could add an
+  explicit CSRF token.)
+- **Trade-off (documented):** `register` reports a duplicate email with a
+  specific message; this is a known account-enumeration vector, mitigated by
+  per-client rate limiting rather than hiding the message.
+
+## Distributed realtime design (Phase 1.5)
+
+The provider-independent `RealtimeTransport` is the client-facing seam. For a
+multi-instance / serverless deployment the application injects a
+`DistributedRealtimeTransport` (see `src/server/realtime/distributed.ts`), which
+adds `joinRoomChannel`, `leaveRoomChannel`, `presence`, and `close` on top of
+publish/subscribe + event fan-out to room channels.
+
+**Recommended options and trade-offs (design only — no provider wired up yet):**
+
+| Option | Pros | Cons |
+| --- | --- | --- |
+| Managed provider (Ably / Pusher / Liveblocks) | Low ops, presence + retention + reconnect built in | Vendor dependency/cost |
+| Postgres-backed pub/sub (LISTEN/NOTIFY) | Reuses existing Neon, no new infra | Not reliable across serverless scale; no cross-instance presence |
+| Vercel Native/WebSocket provider | Fits the platform | Platform-bound, still a service to configure |
+| Self-hosted WS/Socket.IO | Full control | Needs a long-running process (not Vercel functions) |
+
+**Current vs not-yet:**
+
+- **CURRENT:** a single-process in-memory transport + SSE stream works (dev +
+  tests). Only authorized room members can subscribe; the server assigns event
+  sequences; clients cannot publish authoritative state.
+- **NOT YET:** multi-instance distributed realtime and distributed presence.
+  Do not treat the in-memory transport as production distributed realtime.
+
+## Rate limiting (Phase 1.5)
+
+- **Implemented:** `RateLimiter` interface + `InMemoryRateLimiter`
+  (sliding-window counter, per-key). Applied to login, register, room create/
+  join/ready/kick/host/start/read, and SSE connection attempts.
+- **Scope:** **development / single-process only.** It is not shared across
+  serverless instances, so it is not a production distributed rate limiter.
+- **Production:** substitute a distributed limiter (Vercel KV / Upstash /
+  Redis) behind the same interface. Do not claim distributed limiting from the
+  in-memory implementation.
+
+## Concurrency guarantees (Phase 1.5)
+
+Correctness under duplicate/concurrent requests is derived from **database
+constraints** and **idempotent retry**, not client logic:
+
+- `UNIQUE(room_id, user_id)` → no duplicate seats.
+- `UNIQUE(room_id, slot)` → capacity is bounded by the number of slots.
+- `UNIQUE(room_code)` → join codes are unique.
+- `UNIQUE(room_id, sequence)` → server-assigned event ordering is stable.
+- Mutations run in `db.transaction(...)`; `join`/`create` retry on violation;
+  `join`/`ready`/`start` are idempotent.
+
+**Unprovable here:** true *concurrent* PostgreSQL behavior (two simultaneous
+joins racing a `SELECT`+`INSERT`) cannot be exercised without a real Neon/
+Postgres instance, so no results are claimed for that. The guarantees above are
+enforced by the schema constraints themselves, which are validated
+deterministically by `tests/db/constraints.test.ts` against the generated
+schema.
+
+## Security model (summary)
+
+Identity, host, room, slot, status, ready, and count are all server-derived;
+the client supplies none of them. Every room read/SSE requires membership;
+host-only operations are enforced server-side (see
+`src/server/room/authorization.ts` + `RoomAppService`). SQL injection is
+prevented by parameterized Drizzle queries; errors map to typed `AppError`
+codes and never leak SQL/stack/paths/secrets.
+
+## Remaining production requirements
+
+- Configure `DATABASE_URL` (Neon) and run `pnpm db:migrate`.
+- Substitute a distributed realtime transport + presence (multi-instance).
+- Substitute a distributed rate limiter (production).
+- Optional: explicit CSRF token, email verification, and refresh-token rotation.
+- Load-test concurrent joins/starts against a real Postgres instance.

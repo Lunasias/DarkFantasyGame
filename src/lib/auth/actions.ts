@@ -9,14 +9,20 @@ import { loginSchema, registerSchema } from "./schemas";
 import type { AuthUser } from "./auth-service";
 import { assertValid, runAction } from "../result";
 
+async function clientContext(): Promise<{ userAgent: string | undefined; rateLimitKey: string }> {
+  const h = await headers();
+  // x-forwarded-for: client IP chain (Vercel/behind proxies); the first hop is the caller.
+  const ip = h.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
+  return { userAgent: h.get("user-agent") ?? undefined, rateLimitKey: ip };
+}
+
 export async function registerAction(
   input: unknown,
 ): Promise<ApiResult<AuthUser>> {
   return runAction(async () => {
     const parsed = assertValid(registerSchema, input);
-    const userAgent = (await headers()).get("user-agent") ?? undefined;
     const auth = await getAuthService();
-    const result = await auth.register(parsed, userAgent);
+    const result = await auth.register(parsed, await clientContext());
     const store = await cookies();
     store.set(SESSION_COOKIE, result.token, sessionCookieOptions(result.expiresAt.getTime()));
     return result.user;
@@ -26,9 +32,8 @@ export async function registerAction(
 export async function loginAction(input: unknown): Promise<ApiResult<AuthUser>> {
   return runAction(async () => {
     const parsed = assertValid(loginSchema, input);
-    const userAgent = (await headers()).get("user-agent") ?? undefined;
     const auth = await getAuthService();
-    const result = await auth.login(parsed.email, parsed.password, userAgent);
+    const result = await auth.login(parsed.email, parsed.password, await clientContext());
     const store = await cookies();
     store.set(SESSION_COOKIE, result.token, sessionCookieOptions(result.expiresAt.getTime()));
     return result.user;
