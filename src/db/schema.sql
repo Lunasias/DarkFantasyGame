@@ -103,6 +103,40 @@ CREATE TABLE "reward_claims" (
 	CONSTRAINT "reward_claims_gold_non_negative" CHECK ("reward_claims"."gold" >= 0)
 );
 --> statement-breakpoint
+CREATE TABLE "board_positions" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"game_session_id" uuid NOT NULL,
+	"character_id" text NOT NULL,
+	"node_id" text NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE "combats" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"game_session_id" uuid NOT NULL,
+	"status" text DEFAULT 'active' NOT NULL,
+	"active_combatant" text,
+	"winner" text,
+	"combat_turn" integer DEFAULT 0 NOT NULL,
+	"state_version" integer DEFAULT 0 NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE "combat_participants" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"combat_id" uuid NOT NULL,
+	"character_id" text NOT NULL,
+	"hp" integer NOT NULL,
+	"max_hp" integer NOT NULL,
+	"attack" integer NOT NULL,
+	"defense" integer NOT NULL,
+	"alive" boolean DEFAULT true NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
 CREATE TABLE "rooms" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"room_code" text NOT NULL,
@@ -183,6 +217,9 @@ ALTER TABLE "character_inventory" ADD CONSTRAINT "character_inventory_item_id_it
 ALTER TABLE "shop_inventory" ADD CONSTRAINT "shop_inventory_shop_id_shops_id_fk" FOREIGN KEY ("shop_id") REFERENCES "public"."shops"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "shop_inventory" ADD CONSTRAINT "shop_inventory_item_id_items_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."items"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "reward_claims" ADD CONSTRAINT "reward_claims_character_id_characters_id_fk" FOREIGN KEY ("character_id") REFERENCES "public"."characters"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "board_positions" ADD CONSTRAINT "board_positions_game_session_id_game_sessions_id_fk" FOREIGN KEY ("game_session_id") REFERENCES "public"."game_sessions"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "combats" ADD CONSTRAINT "combats_game_session_id_game_sessions_id_fk" FOREIGN KEY ("game_session_id") REFERENCES "public"."game_sessions"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "combat_participants" ADD CONSTRAINT "combat_participants_combat_id_combats_id_fk" FOREIGN KEY ("combat_id") REFERENCES "public"."combats"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "rooms" ADD CONSTRAINT "rooms_host_user_id_users_id_fk" FOREIGN KEY ("host_user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "room_players" ADD CONSTRAINT "room_players_room_id_rooms_id_fk" FOREIGN KEY ("room_id") REFERENCES "public"."rooms"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "room_players" ADD CONSTRAINT "room_players_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
@@ -204,6 +241,11 @@ CREATE INDEX "shop_inventory_shop_id_idx" ON "shop_inventory" USING btree ("shop
 CREATE UNIQUE INDEX "shop_inventory_shop_item_unique" ON "shop_inventory" USING btree ("shop_id","item_id");--> statement-breakpoint
 CREATE INDEX "reward_claims_character_id_idx" ON "reward_claims" USING btree ("character_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "reward_claims_character_reward_unique" ON "reward_claims" USING btree ("character_id","reward_key");--> statement-breakpoint
+CREATE INDEX "board_positions_game_session_id_idx" ON "board_positions" USING btree ("game_session_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "board_positions_session_character_unique" ON "board_positions" USING btree ("game_session_id","character_id");--> statement-breakpoint
+CREATE INDEX "combats_game_session_id_idx" ON "combats" USING btree ("game_session_id");--> statement-breakpoint
+CREATE INDEX "combat_participants_combat_id_idx" ON "combat_participants" USING btree ("combat_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "combat_participants_combat_character_unique" ON "combat_participants" USING btree ("combat_id","character_id");--> statement-breakpoint
 CREATE INDEX "rooms_host_user_id_idx" ON "rooms" USING btree ("host_user_id");--> statement-breakpoint
 CREATE INDEX "rooms_status_idx" ON "rooms" USING btree ("status");--> statement-breakpoint
 CREATE UNIQUE INDEX "rooms_room_code_unique" ON "rooms" USING btree ("room_code");--> statement-breakpoint

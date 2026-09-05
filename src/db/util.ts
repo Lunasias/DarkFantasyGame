@@ -1,8 +1,14 @@
-/** Detect a Postgres unique-violation error (works for `pg` and pg-mem). */
+/** Detect a Postgres unique-violation error (works for `pg`, pg-mem, and
+ * Drizzle wrappers whose `driverError`/`cause` carries the real code). */
 export function isUniqueViolation(error: unknown): boolean {
   if (typeof error !== "object" || error === null) return false;
-  const code = (error as { code?: string }).code;
+  const err = error as {
+    code?: string;
+    message?: string;
+    driverError?: { code?: string };
+    cause?: { code?: string };
+  };
+  const code = err.code ?? err.driverError?.code ?? err.cause?.code;
   if (code === "23505") return true;
-  const message = (error as { message?: string }).message ?? "";
-  return /duplicate|unique violation/i.test(message);
+  return /duplicate|unique violation/i.test(err.message ?? "");
 }

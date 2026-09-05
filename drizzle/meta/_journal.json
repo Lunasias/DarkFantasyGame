@@ -43,6 +43,13 @@
       "when": 1788624761636,
       "tag": "0005_familiar_kid_colt",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1788625921828,
+      "tag": "0006_classy_mephistopheles",
+      "breakpoints": true
     }
   ]
 }
