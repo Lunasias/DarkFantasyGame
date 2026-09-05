@@ -12,6 +12,10 @@ export {
 } from "./event";
 export type { GameEvent, GameEventType } from "./event";
 export { createId } from "./id";
+export { TurnEngine, TURN_EVENT_TYPES, TURN_LIFECYCLE } from "./turn-engine";
+export type { TurnEngineOptions, TurnEvent, TurnEventType, TurnPhase, TurnResolution } from "./turn-engine";
+export { createRng } from "./rng";
+export type { Rng } from "./rng";
 export {
   GameError,
   GAME_ERROR_CODES,
