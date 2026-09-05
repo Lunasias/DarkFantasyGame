@@ -21,6 +21,8 @@ export function GameScreen({ sessionId }: { sessionId: string }) {
   const [dest, setDest] = useState<string>("B");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  const [rolling, setRolling] = useState(false);
+  const [attackingId, setAttackingId] = useState<string | null>(null);
 
   useEffect(() => {
     unwrap(getMeAction())
@@ -54,7 +56,7 @@ export function GameScreen({ sessionId }: { sessionId: string }) {
   return (
     <main className="flex flex-1 flex-col gap-4 px-4 py-4 lg:flex-row">
       <div className="relative min-h-[420px] flex-1 overflow-hidden rounded-xl border border-zinc-800">
-        <GameBoard3D snapshot={snapshot} />
+        <GameBoard3D snapshot={snapshot} selectedNode={dest} attackingId={attackingId} />
         <span className={`absolute right-3 top-3 rounded-full px-3 py-1 text-xs ${live ? "bg-emerald-900 text-emerald-300" : "bg-amber-900 text-amber-300"}`}>
           {live ? "live" : "reconnecting"}
         </span>
@@ -70,17 +72,35 @@ export function GameScreen({ sessionId }: { sessionId: string }) {
           <p className="mt-1 text-xs text-zinc-500">
             Active: <span className="text-zinc-300">{snapshot.activePlayer?.slice(0, 8) ?? "—"}</span>
           </p>
-          {dice !== null && <p className="mt-1 text-sm text-zinc-200">Dice: {dice}</p>}
+          <div className="mt-1 flex items-center gap-2 text-sm text-zinc-200">
+            <span
+              className={`inline-block h-5 w-5 rounded border border-zinc-300 text-center leading-5 ${
+                rolling ? "animate-spin" : ""
+              }`}
+            >
+              {dice !== null ? dice : "—"}
+            </span>
+            <span className="text-xs text-zinc-500">dice</span>
+          </div>
           {msg && <p className="mt-1 text-xs text-red-400">{msg}</p>}
 
           {myTurn && (
             <div className="mt-3 flex flex-wrap gap-2">
               <button
-                disabled={busy}
-                onClick={() => guard(() => rollDiceAction(sessionId), (d) => setDice((d as { dice: number }).dice))}
+                disabled={busy || rolling}
+                onClick={() => {
+                  setRolling(true);
+                  guard(
+                    () => rollDiceAction(sessionId),
+                    (d) => {
+                      setDice((d as { dice: number }).dice);
+                      setRolling(false);
+                    },
+                  ).finally(() => setRolling(false));
+                }}
                 className="rounded bg-emerald-700 px-3 py-1.5 text-sm text-white disabled:opacity-50"
               >
-                Roll
+                {rolling ? "Rolling…" : "Roll"}
               </button>
               <select
                 value={dest}
@@ -136,22 +156,37 @@ export function GameScreen({ sessionId }: { sessionId: string }) {
               Status <span className="text-zinc-100">{combat.status}</span> · Winner{" "}
               <span className="text-zinc-100">{combat.winner?.slice(0, 8) ?? "—"}</span>
             </p>
-            <ul className="mt-2 space-y-1 text-sm">
+            <ul className="mt-2 space-y-2 text-sm">
               {combat.participants.map((p) => (
-                <li key={p.characterId} className="flex items-center gap-2">
+                <li key={p.characterId} className="flex items-center gap-2" style={{ opacity: p.alive ? 1 : 0.35 }}>
                   <span className="h-2 w-2 rounded-full bg-emerald-500" style={{ opacity: p.alive ? 1 : 0.2 }} />
                   <span className="font-mono">{p.characterId.slice(0, 6)}</span>
-                  <span className="ml-auto text-zinc-400">{p.hp}/{p.maxHp}</span>
+                  <span className="ml-auto flex items-center gap-2">
+                    <span className="h-1.5 w-16 overflow-hidden rounded bg-zinc-800">
+                      <span
+                        className="block h-full bg-emerald-500 transition-all duration-500"
+                        style={{ width: `${(p.hp / p.maxHp) * 100}%` }}
+                      />
+                    </span>
+                    <span className="text-xs text-zinc-400">{p.hp}/{p.maxHp}</span>
+                  </span>
                   {combat.activeCombatant === p.characterId && <span className="text-amber-300">●</span>}
                 </li>
               ))}
             </ul>
+            {combat.status === "completed" && (
+              <p className="mt-3 text-sm font-medium text-emerald-400">Victory — winner {combat.winner?.slice(0, 8) ?? "unknown"}</p>
+            )}
             {myTurn && meChar && meCombatant && combat.status === "active" && (
               <button
                 disabled={busy}
                 onClick={() => {
                   const target = combat.participants.find((p) => p.characterId !== meChar?.characterId && p.alive);
-                  if (target && meChar) guard(() => attackSessionAction(sessionId, meChar.characterId, target.characterId));
+                  if (target && meChar) {
+                    setAttackingId(meChar.characterId);
+                    guard(() => attackSessionAction(sessionId, meChar.characterId, target.characterId))
+                      .finally(() => setTimeout(() => setAttackingId(null), 600));
+                  }
                 }}
                 className="mt-3 rounded bg-red-800 px-3 py-1.5 text-sm text-white disabled:opacity-50"
               >
