@@ -29,6 +29,7 @@ import {
   persistShopSell,
 } from "@/db/game-store";
 import { GameplayService } from "@/server/game/gameplay";
+import { getGameSnapshot } from "@/server/game/game-state";
 
 const ENABLED = !!process.env.DATABASE_URL && !process.env.CI;
 let pool: Pool;
@@ -239,6 +240,38 @@ describe.runIf(ENABLED)("Phase 11 persistence (real Neon)", () => {
 
       // completed combat rejects further attacks (no duplicate reward)
       await expect(svc.attack(host.userId, sessionId, host.characterId, guest.characterId)).rejects.toThrow();
+    }, 30000);
+
+    it("returns a complete authoritative snapshot and rejects a non-member", async () => {
+      const host = await createChar("snap_host");
+      const guest = await createChar("snap_guest");
+      const outsider = await createChar("snap_out");
+      const roomId = createId();
+      const sessionId = createId();
+      sessionIds.push(sessionId);
+      await db.insert(rooms).values({ id: roomId, roomCode: "SNAP01", name: "Snap", hostUserId: host.userId, status: "in_game", maxPlayers: 4 });
+      await db.insert(roomPlayers).values({ id: createId(), roomId, userId: host.userId, slot: 0, ready: true, isHost: true, connected: true });
+      await db.insert(roomPlayers).values({ id: createId(), roomId, userId: guest.userId, slot: 1, ready: true, isHost: false, connected: true });
+      await db.insert(gameSessions).values({ id: sessionId, roomId, phase: "active", currentTurnNumber: 1, stateVersion: 0 });
+      await persistInventorySet(db, { characterId: host.characterId, itemId: "grave_dust", quantity: 4, equippedSlot: null });
+      await persistCombatStart(db, {
+        gameSessionId: sessionId,
+        participants: [
+          { characterId: host.characterId, hp: 30, maxHp: 30, attack: 12, defense: 4 },
+          { characterId: guest.characterId, hp: 30, maxHp: 30, attack: 10, defense: 4 },
+        ],
+      });
+
+      const snap = await getGameSnapshot(db, host.userId, sessionId);
+      expect(snap.activePlayer).toBe(host.userId);
+      expect(snap.characters.length).toBe(2);
+      const hostChar = (snap.characters as { characterId: string; inventory: { itemId: string; quantity: number }[]; effectiveStats: { maxHealth: number } }[])
+        .find((c) => c.characterId === host.characterId);
+      expect(hostChar?.inventory).toContainEqual({ itemId: "grave_dust", quantity: 4 });
+      expect(hostChar?.effectiveStats.maxHealth).toBe(100); // character base stats
+      expect(snap.combat).not.toBeNull();
+
+      await expect(getGameSnapshot(db, outsider.userId, sessionId)).rejects.toThrow();
     }, 30000);
   });
 });

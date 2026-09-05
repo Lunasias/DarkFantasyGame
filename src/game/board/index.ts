@@ -1,6 +1,7 @@
 export { Board } from "./board";
 export { BoardNode } from "./node";
 export { BoardEngine } from "./board-engine";
+export { createDefaultBoard } from "./default-board";
 export type { BoardEvent, BoardEventType, MoveResult } from "./board-engine";
 export type {
   BoardNodeKind,

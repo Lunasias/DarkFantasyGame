@@ -22,6 +22,7 @@ import { createCharacter } from "../../game/engine/character";
 import { addExperience } from "../../game/progression";
 import { addGold, getGold } from "../../game/economy/gold";
 import { equip, getEquipped } from "../../game/items/equipment";
+import { createDefaultBoard, BoardEngine } from "../../game/board";
 import type { RealtimeTransport } from "../transport";
 
 /**
@@ -92,16 +93,26 @@ export class GameplayService {
     return { dice };
   }
 
-  /** Authoritative move: persists position + advances state version. */
+  /** Authoritative move: server rolls the dice and validates the destination
+   *  against the static board graph within the rolled distance. */
   async move(actorId: string, sessionId: string, nodeId: string) {
     const roomId = await this.assertSessionAccess(actorId, sessionId);
     await this.requireActive(actorId, sessionId);
     if (!nodeId || nodeId.length === 0) throw new AppError("INVALID_ACTION", "Invalid destination node");
     const state = await loadGameState(this.db, sessionId);
+
+    const board = createDefaultBoard();
+    const engine = new BoardEngine(board);
+    const current = state.positions.find((p) => p.characterId === actorId)?.nodeId ?? "A";
+    engine.place(actorId, current);
+    const dice = createRng().nextInt(6) + 1;
+    if (!engine.canMove(actorId, nodeId, dice)) {
+      throw new AppError("INVALID_ACTION", `Node "${nodeId}" is not reachable within ${dice} step(s)`);
+    }
     const next = state.stateVersion + 1;
     await persistMove(this.db, { sessionId, characterId: actorId, nodeId, turn: state.currentTurnNumber, stateVersion: next });
-    await this.publish(roomId, "PLAYER_POSITION_CHANGED", { characterId: actorId, nodeId, stateVersion: next });
-    return { nodeId, stateVersion: next };
+    await this.publish(roomId, "PLAYER_POSITION_CHANGED", { characterId: actorId, nodeId, dice, stateVersion: next });
+    return { nodeId, dice, stateVersion: next };
   }
 
   /**
