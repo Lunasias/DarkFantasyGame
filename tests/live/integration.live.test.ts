@@ -23,6 +23,7 @@ import { addItem, equip, getQuantity } from "@/game/items";
 import { RewardService } from "@/game/rewards";
 import { Board, BoardEngine, BoardNode } from "@/game/board";
 import { CombatEngine, Combatant } from "@/game/combat";
+import { getGameSnapshot } from "@/server/game/game-state";
 
 const ENABLED = !!process.env.DATABASE_URL && !process.env.CI;
 
@@ -32,6 +33,7 @@ let auth: AuthService;
 let roomsSvc: RoomAppService;
 let realtime: InMemoryRealtimeTransport;
 const testEmails: string[] = [];
+const sessionIds: string[] = [];
 
 function stripUnsupported(url: string): string {
   return url.replace("&channel_binding=require", "");
@@ -59,13 +61,16 @@ describe.runIf(ENABLED)("live integration (real Neon)", () => {
   });
 
   afterAll(async () => {
-    if (db && testEmails.length) {
-      // Remove ONLY the test records created here (cascades to profiles,
-      // sessions, hosted rooms, room_players, etc.).
-      await db.delete(users).where(like(users.email, "live_%"));
+    if (db) {
+      for (const id of sessionIds) {
+        await db.delete(gameSessions).where(eq(gameSessions.id, id));
+      }
+      if (testEmails.length) {
+        await db.delete(users).where(like(users.email, "live_%"));
+      }
     }
     await pool?.end?.();
-  });
+  }, 30000);
 
   describe("auth against real Neon", () => {
     it("registers, persists hash, logs in, validates, and revokes", async () => {
@@ -125,6 +130,7 @@ describe.runIf(ENABLED)("live integration (real Neon)", () => {
       await roomsSvc.setReady(c.user, { roomId: room.id, ready: true });
       const started = await roomsSvc.startGame(a.user, { roomId: room.id });
       expect(started.gameSessionId).toBeTruthy();
+      sessionIds.push(started.gameSessionId);
 
       const s = await db.select().from(gameSessions).where(eq(gameSessions.id, started.gameSessionId)).limit(1);
       // Session is created in 'lobby' and becomes 'active' once the first turn
@@ -146,6 +152,7 @@ describe.runIf(ENABLED)("live integration (real Neon)", () => {
       await roomsSvc.setReady(a.user, { roomId: room.id, ready: true });
       await roomsSvc.setReady(b.user, { roomId: room.id, ready: true });
       const started = await roomsSvc.startGame(a.user, { roomId: room.id });
+      sessionIds.push(started.gameSessionId);
 
       const engine = new TurnEngine(started.gameSessionId, [a.user.id, b.user.id], {
         now: () => 0,
@@ -250,6 +257,28 @@ describe.runIf(ENABLED)("live integration (real Neon)", () => {
     // NOTE: shop buy/sell and reward claims are domain-level (in-memory) and are
     // not DB-backed yet, so TRUE concurrent transaction tests for those could not
     // be performed against Neon — documented, not claimed.
+  });
+
+  describe("resume flow", () => {
+    it("loads an authoritative snapshot for a member and rejects a non-member", async () => {
+      const a = await register("resume_a");
+      const b = await register("resume_b");
+      const room = await roomsSvc.createRoom(a.user, { name: "Resume", maxPlayers: 2 });
+      await roomsSvc.joinRoom(b.user, { roomCode: room.code });
+      await roomsSvc.setReady(a.user, { roomId: room.id, ready: true });
+      await roomsSvc.setReady(b.user, { roomId: room.id, ready: true });
+      const started = await roomsSvc.startGame(a.user, { roomId: room.id });
+      sessionIds.push(started.gameSessionId);
+
+      const snap = await getGameSnapshot(db, a.user.id, started.gameSessionId);
+      expect(snap.sessionId).toBe(started.gameSessionId);
+      expect(snap.stateVersion).toBe(0);
+      expect(snap.phase).toBe("lobby");
+      expect(snap.roomCode).toBe(room.code);
+
+      const outsider = await register("resume_out");
+      await expect(getGameSnapshot(db, outsider.user.id, started.gameSessionId)).rejects.toThrow();
+    }, 30000);
   });
 
   describe("schema tables present", () => {
