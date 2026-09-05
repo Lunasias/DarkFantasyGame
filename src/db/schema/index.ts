@@ -6,6 +6,8 @@ export * from "./player-profiles";
 export * from "./characters";
 export * from "./items";
 export * from "./character-inventory";
+export * from "./shops";
+export * from "./shop-inventory";
 export * from "./rooms";
 export * from "./room-players";
 export * from "./game-sessions";

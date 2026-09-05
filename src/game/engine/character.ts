@@ -30,6 +30,8 @@ export class Character {
   level: number;
   /** Total experience gained (starts at 0). */
   experience: number;
+  /** Authoritative gold balance (integer, non-negative). */
+  gold: number;
   /** Owned items: itemId → quantity (authoritative inventory state). */
   readonly inventory = new Map<string, number>();
   /** Equipped slot → itemId (authoritative equipment state). */
@@ -47,6 +49,7 @@ export class Character {
     this.stats = stats;
     this.level = 1;
     this.experience = 0;
+    this.gold = 100;
   }
 
   get isAlive(): boolean {

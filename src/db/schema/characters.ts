@@ -1,4 +1,12 @@
-import { index, integer, pgTable, text, uuid } from "drizzle-orm/pg-core";
+import {
+  check,
+  index,
+  integer,
+  pgTable,
+  text,
+  uuid,
+} from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { timestamps, uuidPk } from "./shared";
 import { playerProfiles } from "./player-profiles";
 
@@ -19,11 +27,15 @@ export const characters = pgTable(
     jobId: text("job_id"),
     level: integer("level").notNull().default(1),
     experience: integer("experience").notNull().default(0),
+    gold: integer("gold").notNull().default(100),
     health: integer("health").notNull(),
     maxHealth: integer("max_health").notNull(),
     ...timestamps(),
   },
-  (table) => [index("characters_profile_id_idx").on(table.profileId)],
+  (table) => [
+    index("characters_profile_id_idx").on(table.profileId),
+    check("characters_gold_non_negative", sql`${table.gold} >= 0`),
+  ],
 );
 
 export type Character = typeof characters.$inferSelect;
