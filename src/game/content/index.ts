@@ -114,6 +114,19 @@ export const allWorldEvents = (): readonly WorldEventDefinition[] => WORLD_EVENT
 export const allTowns = (): readonly TownDefinition[] => TOWN_DEFINITIONS;
 export const allDungeons = (): readonly DungeonDefinition[] => DUNGEON_DEFINITIONS;
 
+/** Server + client-safe: the world content available at a board node. */
+export function getNodeInteractions(nodeId: string): {
+  town: TownDefinition | null;
+  event: WorldEventDefinition | null;
+  dungeon: DungeonDefinition | null;
+} {
+  return {
+    town: TOWN_DEFINITIONS.find((t) => t.nodeId === nodeId) ?? null,
+    event: WORLD_EVENT_DEFINITIONS.find((e) => e.nodeId === nodeId) ?? null,
+    dungeon: DUNGEON_DEFINITIONS.find((d) => d.entryNodeId === nodeId) ?? null,
+  };
+}
+
 export {
   questRewardKey,
   eventRewardKey,

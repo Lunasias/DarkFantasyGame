@@ -10,11 +10,19 @@ import {
   rollDiceAction,
   startEncounterAction,
   useSkillAction as invokeSkillAction,
+  acceptQuestAction,
+  completeQuestAction,
+  resolveWorldEventAction,
+  enterTownAction,
+  enterDungeonAction,
+  completeDungeonAction,
 } from "@/server/game/gameplay-actions";
 import {
   encounterForNode,
   isMonsterParticipant,
   monsterForParticipant,
+  getNodeInteractions,
+  allQuests,
 } from "@/game/content";
 import { allSkills } from "@/game/combat";
 import { unwrap } from "@/lib/unwrap";
@@ -63,6 +71,10 @@ export function GameScreen({ sessionId }: { sessionId: string }) {
   const meNode = meChar ? snapshot.positions.find((p) => p.characterId === meChar.characterId)?.nodeId ?? null : null;
   const encounter = meNode ? encounterForNode(meNode) : null;
   const canAttack = !!meChar && !!meCombatant && !!combat && combat.status === "active" && combat.activeCombatant === meChar.characterId;
+  const content = meChar ? snapshot.content[meChar.characterId] : undefined;
+  const nodeContent = meNode ? getNodeInteractions(meNode) : { town: null, event: null, dungeon: null };
+  const acceptedQuests = content?.quests ?? [];
+  const questById = new Map(acceptedQuests.map((q) => [q.questId, q]));
 
   return (
     <main className="flex flex-1 flex-col gap-4 px-4 py-4 lg:flex-row">
@@ -265,18 +277,132 @@ export function GameScreen({ sessionId }: { sessionId: string }) {
           </Section>
         )}
 
-        {!combat && meChar && encounter && (
-          <Section title="Encounter">
-            <p className="text-sm text-zinc-300">
-              A monster lurks at <span className="text-zinc-100">{meNode}</span>.
-            </p>
-            <button
-              disabled={busy}
-              onClick={() => guard(() => startEncounterAction(sessionId, meChar.characterId))}
-              className="mt-3 rounded bg-red-700 px-3 py-1.5 text-sm text-white disabled:opacity-50"
-            >
-              Start encounter
-            </button>
+        {!combat && meChar && meNode && (
+          <Section title="World">
+            <p className="text-xs text-zinc-500">You are at node <span className="text-zinc-300">{meNode}</span>.</p>
+            <div className="mt-3 flex flex-col gap-2 text-sm">
+              {nodeContent.town && (
+                <div className="rounded border border-zinc-800 bg-zinc-900/50 p-2.5">
+                  <p className="text-zinc-200">
+                    Town · <span className="text-emerald-300">{nodeContent.town.name}</span>
+                  </p>
+                  <p className="text-xs text-zinc-500">{nodeContent.town.description}</p>
+                  <button
+                    disabled={busy}
+                    onClick={() => guard(() => enterTownAction(sessionId, meChar.characterId, nodeContent.town!.id))}
+                    className="mt-2 rounded bg-emerald-700 px-3 py-1 text-xs text-white disabled:opacity-50"
+                  >
+                    Enter town
+                  </button>
+                </div>
+              )}
+              {nodeContent.event && (
+                <div className="rounded border border-zinc-800 bg-zinc-900/50 p-2.5">
+                  <p className="text-zinc-200">
+                    Event · <span className="text-amber-300">{nodeContent.event.name}</span>
+                  </p>
+                  <p className="text-xs text-zinc-500">{nodeContent.event.description}</p>
+                  <button
+                    disabled={busy}
+                    onClick={() => guard(() => resolveWorldEventAction(sessionId, meChar.characterId, nodeContent.event!.id))}
+                    className="mt-2 rounded bg-amber-700 px-3 py-1 text-xs text-white disabled:opacity-50"
+                  >
+                    Resolve event
+                  </button>
+                </div>
+              )}
+              {nodeContent.dungeon && (
+                <div className="rounded border border-zinc-800 bg-zinc-900/50 p-2.5">
+                  <p className="text-zinc-200">
+                    Dungeon · <span className="text-purple-300">{nodeContent.dungeon.name}</span>
+                  </p>
+                  <p className="text-xs text-zinc-500">{nodeContent.dungeon.description}</p>
+                  <div className="mt-2 flex gap-2">
+                    <button
+                      disabled={busy}
+                      onClick={() => guard(() => enterDungeonAction(sessionId, meChar.characterId, nodeContent.dungeon!.id))}
+                      className="rounded bg-purple-700 px-3 py-1 text-xs text-white disabled:opacity-50"
+                    >
+                      Enter dungeon
+                    </button>
+                    {content?.dungeons.find((d) => d.dungeonId === nodeContent.dungeon!.id)?.status === "entered" && (
+                      <button
+                        disabled={busy}
+                        onClick={() => guard(() => completeDungeonAction(sessionId, meChar.characterId, nodeContent.dungeon!.id))}
+                        className="rounded bg-purple-800 px-3 py-1 text-xs text-white disabled:opacity-50"
+                      >
+                        Complete dungeon
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+              {encounter && (
+                <div className="rounded border border-zinc-800 bg-zinc-900/50 p-2.5">
+                  <p className="text-zinc-200">
+                    Encounter · <span className="text-red-300">monster</span>
+                  </p>
+                  <button
+                    disabled={busy}
+                    onClick={() => guard(() => startEncounterAction(sessionId, meChar.characterId))}
+                    className="mt-2 rounded bg-red-700 px-3 py-1 text-xs text-white disabled:opacity-50"
+                  >
+                    Start encounter
+                  </button>
+                </div>
+              )}
+              {!nodeContent.town && !nodeContent.event && !nodeContent.dungeon && !encounter && (
+                <p className="text-xs text-zinc-600">Nothing to interact with here.</p>
+              )}
+            </div>
+          </Section>
+        )}
+
+        {meChar && (
+          <Section title="Quests">
+            <ul className="space-y-2 text-sm">
+              {allQuests().map((q) => {
+                const mine = questById.get(q.id);
+                const status = mine?.status ?? "available";
+                const objectives = mine?.objectives ?? [];
+                return (
+                  <li key={q.id} className="rounded border border-zinc-800 bg-zinc-900/50 p-2.5">
+                    <p className="text-zinc-200">{q.name}</p>
+                    <p className="text-xs text-zinc-500">{q.description}</p>
+                    {status !== "available" && objectives.length > 0 && (
+                      <ul className="mt-1 space-y-0.5 text-xs text-zinc-400">
+                        {objectives.map((o) => (
+                          <li key={o.objectiveId}>
+                            {o.target}: {o.progress}/{o.amount} {o.done ? "✓" : ""}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    <div className="mt-2 flex items-center gap-2">
+                      {status === "available" && (
+                        <button
+                          disabled={busy}
+                          onClick={() => guard(() => acceptQuestAction(sessionId, meChar.characterId, q.id))}
+                          className="rounded bg-blue-800 px-2.5 py-1 text-xs text-white disabled:opacity-50"
+                        >
+                          Accept
+                        </button>
+                      )}
+                      {status === "accepted" && (
+                        <button
+                          disabled={busy}
+                          onClick={() => guard(() => completeQuestAction(sessionId, meChar.characterId, q.id))}
+                          className="rounded bg-emerald-700 px-2.5 py-1 text-xs text-white disabled:opacity-50"
+                        >
+                          Complete
+                        </button>
+                      )}
+                      {status === "completed" && <span className="text-xs text-emerald-400">Completed</span>}
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
           </Section>
         )}
       </aside>

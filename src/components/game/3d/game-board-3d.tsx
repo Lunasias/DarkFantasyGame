@@ -5,6 +5,12 @@ import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { Html, Line } from "@react-three/drei";
 import { Vector3, type Group } from "three";
 import type { GameSnapshot } from "@/server/game/actions";
+import {
+  allTowns,
+  allDungeons,
+  allWorldEvents,
+  encounterForNode,
+} from "@/game/content";
 
 type Vec3 = [number, number, number];
 
@@ -27,6 +33,33 @@ function nodeVec(id: string): Vec3 {
   const p = NODES[id] ?? [0, 0];
   return [p[0], 0, p[1]];
 }
+
+type NodeKind = "town" | "dungeon" | "encounter" | "event" | "plain";
+
+/** Visual-only node classification (data-driven from the content registry). */
+function nodeKind(id: string): NodeKind {
+  if (allTowns().some((t) => t.nodeId === id)) return "town";
+  if (allDungeons().some((d) => d.entryNodeId === id)) return "dungeon";
+  if (encounterForNode(id)) return "encounter";
+  if (allWorldEvents().some((e) => e.nodeId === id)) return "event";
+  return "plain";
+}
+
+const KIND_COLOR: Record<NodeKind, string> = {
+  town: "#22c55e",
+  dungeon: "#a855f7",
+  encounter: "#ef4444",
+  event: "#f59e0b",
+  plain: "#1f2937",
+};
+
+const KIND_TAG: Record<NodeKind, string> = {
+  town: "T",
+  dungeon: "D",
+  encounter: "E",
+  event: "⚑",
+  plain: "",
+};
 
 export function GameBoard3D({
   snapshot,
@@ -60,6 +93,7 @@ export function GameBoard3D({
           position={nodeVec(id)}
           active={focusNodeId === id}
           selected={selectedNode === id}
+          kind={nodeKind(id)}
         />
       ))}
       {EDGES.map(([a, b]) => (
@@ -103,20 +137,23 @@ function Node({
   position,
   active,
   selected,
+  kind,
 }: {
   id: string;
   position: Vec3;
   active: boolean;
   selected: boolean;
+  kind: NodeKind;
 }) {
+  const base = kind === "plain" ? "#1f2937" : KIND_COLOR[kind];
   return (
     <group position={position}>
       <mesh>
         <boxGeometry args={[1.2, 0.6, 1.2]} />
         <meshStandardMaterial
-          color={active ? "#a16207" : "#1f2937"}
-          emissive={active ? "#eab308" : selected ? "#3b82f6" : "#000000"}
-          emissiveIntensity={active ? 0.4 : selected ? 0.35 : 0}
+          color={active ? "#a16207" : base}
+          emissive={active ? "#eab308" : selected ? "#3b82f6" : kind === "plain" ? "#000000" : base}
+          emissiveIntensity={active ? 0.4 : selected ? 0.35 : kind === "plain" ? 0 : 0.25}
           metalness={0.3}
           roughness={0.7}
         />
@@ -124,6 +161,7 @@ function Node({
       <Html position={[0, 1, 0]} center distanceFactor={14}>
         <span className="pointer-events-none rounded bg-zinc-900/80 px-1.5 py-0.5 text-xs font-semibold tracking-widest text-zinc-200">
           {id}
+          {kind !== "plain" && <span style={{ color: KIND_COLOR[kind] }}> · {KIND_TAG[kind]}</span>}
         </span>
       </Html>
     </group>

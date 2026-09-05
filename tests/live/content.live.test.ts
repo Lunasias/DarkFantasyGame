@@ -522,4 +522,44 @@ describe.runIf(ENABLED)("Phase 19 content persistence (real Neon)", () => {
       await expect(svc.useSkill(host.userId, sessionId, host.characterId, "power_strike", host.characterId)).rejects.toThrow();
     }, 30000);
   });
+
+  describe("world content loop (real Neon)", () => {
+    it("reaches town/event/dungeon/quest content from authoritative position", async () => {
+      const host = await createChar("world_host");
+      const guest = await createChar("world_guest");
+      const outsider = await createChar("world_out");
+      const { sessionId } = await setupSession(host, guest, 2);
+      const svc = new GameplayService(db);
+
+      // Town at node C.
+      await placeAt(sessionId, host.characterId, "C");
+      const town = await svc.enterTown(host.userId, sessionId, host.characterId, "ashenfall");
+      expect(town.townId).toBe("ashenfall");
+
+      // Quest: accept + complete reach_the_village from node C.
+      await svc.acceptQuest(host.userId, sessionId, host.characterId, "reach_the_village");
+      const q = await svc.completeQuest(host.userId, sessionId, host.characterId, "reach_the_village");
+      expect(q.reward.alreadyClaimed).toBe(false);
+      expect(q.reward.goldGranted).toBeGreaterThan(0);
+
+      // World event at node B (server-rolled; outcome deterministic only by store RNG).
+      await placeAt(sessionId, host.characterId, "B");
+      const ev = await svc.resolveWorldEvent(host.userId, sessionId, host.characterId, "cursed_shrine");
+      expect(["success", "missed"]).toContain(ev.outcome);
+
+      // Dungeon at node D.
+      await placeAt(sessionId, host.characterId, "D");
+      const entered = await svc.enterDungeon(host.userId, sessionId, host.characterId, "crypt_of_ash");
+      expect(entered.entered).toBe(true);
+      const cleared = await svc.completeDungeon(host.userId, sessionId, host.characterId, "crypt_of_ash");
+      expect(cleared.reward.alreadyClaimed).toBe(false);
+
+      // Snapshot exposes authoritative content across members; non-member rejected.
+      const snap = await getGameSnapshot(db, host.userId, sessionId);
+      const myContent = snap.content[host.characterId];
+      expect(myContent.quests.some((k) => k.status === "completed")).toBe(true);
+      expect(myContent.dungeons.find((d) => d.dungeonId === "crypt_of_ash")?.status).toBe("completed");
+      await expect(getGameSnapshot(db, outsider.userId, sessionId)).rejects.toThrow();
+    }, 30000);
+  });
 });
