@@ -18,6 +18,7 @@ export const gameEvents = pgTable(
     gameSessionId: uuid("game_session_id")
       .notNull()
       .references(() => gameSessions.id, { onDelete: "cascade" }),
+    actorId: uuid("actor_id"),
     type: text("type").notNull(),
     sequence: integer("sequence").notNull().default(0),
     payload: jsonb("payload"),

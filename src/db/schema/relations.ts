@@ -3,8 +3,10 @@ import { characters } from "./characters";
 import { gameEvents } from "./game-events";
 import { gameSessions } from "./game-sessions";
 import { playerProfiles } from "./player-profiles";
+import { roomEvents } from "./room-events";
 import { roomPlayers } from "./room-players";
 import { rooms } from "./rooms";
+import { sessions } from "./sessions";
 import { turns } from "./turns";
 import { users } from "./users";
 
@@ -18,8 +20,16 @@ export const usersRelations = relations(users, ({ one, many }) => ({
     fields: [users.id],
     references: [playerProfiles.userId],
   }),
+  sessions: many(sessions),
   hostedRooms: many(rooms),
   roomMemberships: many(roomPlayers),
+}));
+
+export const sessionsRelations = relations(sessions, ({ one }) => ({
+  user: one(users, {
+    fields: [sessions.userId],
+    references: [users.id],
+  }),
 }));
 
 export const playerProfilesRelations = relations(
@@ -30,6 +40,7 @@ export const playerProfilesRelations = relations(
       references: [users.id],
     }),
     characters: many(characters),
+    roomMemberships: many(roomPlayers),
   }),
 );
 
@@ -47,6 +58,7 @@ export const roomsRelations = relations(rooms, ({ one, many }) => ({
   }),
   members: many(roomPlayers),
   sessions: many(gameSessions),
+  events: many(roomEvents),
 }));
 
 export const roomPlayersRelations = relations(roomPlayers, ({ one }) => ({
@@ -57,6 +69,10 @@ export const roomPlayersRelations = relations(roomPlayers, ({ one }) => ({
   user: one(users, {
     fields: [roomPlayers.userId],
     references: [users.id],
+  }),
+  profile: one(playerProfiles, {
+    fields: [roomPlayers.profileId],
+    references: [playerProfiles.id],
   }),
 }));
 
@@ -83,5 +99,20 @@ export const gameEventsRelations = relations(gameEvents, ({ one }) => ({
   session: one(gameSessions, {
     fields: [gameEvents.gameSessionId],
     references: [gameSessions.id],
+  }),
+  actor: one(users, {
+    fields: [gameEvents.actorId],
+    references: [users.id],
+  }),
+}));
+
+export const roomEventsRelations = relations(roomEvents, ({ one }) => ({
+  room: one(rooms, {
+    fields: [roomEvents.roomId],
+    references: [rooms.id],
+  }),
+  actor: one(users, {
+    fields: [roomEvents.actorId],
+    references: [users.id],
   }),
 }));

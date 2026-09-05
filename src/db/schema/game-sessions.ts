@@ -20,6 +20,7 @@ export const gameSessions = pgTable(
     }),
     phase: sessionPhaseEnum("phase").notNull().default("lobby"),
     currentTurnNumber: integer("current_turn_number").notNull().default(0),
+    stateVersion: integer("state_version").notNull().default(0),
     config: jsonb("config"),
     startedAt: timestamp("started_at", { withTimezone: true }),
     ...timestamps(),

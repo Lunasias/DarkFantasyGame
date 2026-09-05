@@ -30,9 +30,20 @@ Authentication/identity boundary.
 | --- | --- | --- |
 | `id` | `uuid` PK | `defaultRandom()` |
 | `email` | `text` | unique, not null |
-| `display_name` | `text` | |
+| `display_name` | `text` | not null |
+| `password_hash` | `text` | `bcryptjs` hash; never returned to clients |
 | `avatar_url` | `text` | |
 | `created_at` / `updated_at` | `timestamptz` | |
+
+### `sessions`
+Server-side auth sessions. Only the hashed token is stored.
+| column | type | notes |
+| --- | --- | --- |
+| `id` | `uuid` PK | |
+| `user_id` | `uuid` FK → `users.id` | cascade delete |
+| `token_hash` | `text` | SHA-256, unique |
+| `expires_at` | `timestamptz` | |
+| `user_agent` | `text` | |
 
 ### `player_profiles`
 One per user — the root of persistent progression.
@@ -59,10 +70,13 @@ A pre-game lobby.
 | column | type | notes |
 | --- | --- | --- |
 | `id` | `uuid` PK | |
+| `room_code` | `text` | unique join code |
 | `name` | `text` | not null |
 | `host_user_id` | `uuid` FK → `users.id` | cascade delete |
-| `status` | `room_status` enum | `waiting/ready/in_progress/closed` |
+| `status` | `room_status` enum | `waiting/starting/in_game/finished/closed` |
 | `max_players` | `int` | default 4 |
+| `game_mode` / `ruleset` | `text` | defaults `standard`/`classic` |
+| `visibility` | `room_visibility` enum | `public/private` |
 
 ### `room_players`
 Join table of seated players.
@@ -71,10 +85,14 @@ Join table of seated players.
 | `id` | `uuid` PK | |
 | `room_id` | `uuid` FK → `rooms.id` | cascade delete |
 | `user_id` | `uuid` FK → `users.id` | cascade delete |
+| `profile_id` | `uuid` FK → `player_profiles.id` | set-null |
+| `slot` | `int` | server-allocated seat index |
 | `ready` | `boolean` | default false |
 | `is_host` | `boolean` | default false |
+| `connected` / `last_seen_at` | `boolean` / `timestamptz` | reconnect presence |
 | `joined_at` | `timestamptz` | |
 | — | unique (`room_id`, `user_id`) | prevents duplicate seats |
+| — | unique (`room_id`, `slot`) | prevents slot collision / overfill |
 
 ### `game_sessions`
 A started match (persisted counterpart of the engine `GameSession`).
@@ -84,6 +102,7 @@ A started match (persisted counterpart of the engine `GameSession`).
 | `room_id` | `uuid` FK → `rooms.id` | set null on delete |
 | `phase` | `session_phase` enum | `lobby/active/finished` |
 | `current_turn_number` | `int` | default 0 |
+| `state_version` | `int` | default 0 (monotonic state counter) |
 | `config` | `jsonb` | |
 | `started_at` | `timestamptz` | |
 
@@ -108,6 +127,18 @@ Append-only event stream.
 | `sequence` | `int` | default 0 |
 | `payload` | `jsonb` | |
 
+### `room_events`
+Append-only server-sequenced room event stream (drives realtime + reconnect).
+| column | type | notes |
+| --- | --- | --- |
+| `id` | `uuid` PK | |
+| `room_id` | `uuid` FK → `rooms.id` | cascade delete |
+| `actor_id` | `uuid` FK → `users.id` | set-null |
+| `type` | `text` | event type |
+| `sequence` | `int` | monotonic per room (unique with `room_id`) |
+| `payload` | `jsonb` | |
+| `created_at` | `timestamptz` | |
+
 ## Relationships
 
 Foreign keys are declared on the table definitions. `relations.ts` adds
@@ -129,9 +160,11 @@ pnpm db:push       # push schema directly (dev convenience)
 pnpm db:studio     # open Drizzle Studio
 ```
 
-> Phase 0 does **not** run migrations against a live database (no real
-> credentials are present). The schema is the authoritative definition and is
-> fully type-checked; migrations are generated when a Neon instance is wired up.
+> Migrations are generated but **not** applied to a live database in this
+> environment (no real credentials are present). Applying them is done via
+> `pnpm db:migrate` once `DATABASE_URL` is set. The in-memory bootstrap used by
+> tests/dev applies the committed snapshot at `src/db/schema.sql`, which is the
+> full current-schema DDL (pg-mem cannot replay incremental `ALTER` migrations).
 
 ## Conventions
 

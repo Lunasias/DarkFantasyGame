@@ -1,32 +1,37 @@
-import { createId } from "../engine/id";
 import type { PlayerId, RoomId } from "../engine/types";
 import { roomNotFound } from "./errors";
 import { Room } from "./room";
-import type { RoomSnapshot } from "./types";
+import type { RoomSnapshot, RoomVisibility } from "./types";
 
 export interface CreateRoomInput {
   name: string;
   hostId: PlayerId;
   hostName: string;
   maxPlayers?: number;
+  gameMode?: string;
+  ruleset?: string;
+  visibility?: RoomVisibility;
 }
 
 /**
- * The contract for room operations. Phase 0 ships an in-memory implementation
- * so the domain and tests run anywhere; Phase 1 will provide a
- * database-backed + realtime broadcast implementation of the SAME interface
- * without the domain or callers changing.
+ * The pure-domain room facade (in-memory). It exercises the {@link Room} state
+ * machine directly and is used by unit tests, which do not need persistence or
+ * realtime. The authoritative, transactional, auth-aware implementation lives in
+ * `src/server` and delegates its rule decisions to the same {@link Room} domain.
  */
 export interface RoomService {
   create(input: CreateRoomInput): Room;
   get(roomId: RoomId): Room | undefined;
   require(roomId: RoomId): Room;
+  snapshot(roomId: RoomId): RoomSnapshot;
   join(roomId: RoomId, playerId: PlayerId, name: string): Room;
   leave(roomId: RoomId, playerId: PlayerId): Room;
   setReady(roomId: RoomId, playerId: PlayerId, ready: boolean): Room;
-  setHost(roomId: RoomId, playerId: PlayerId): Room;
-  start(roomId: RoomId): Room;
-  snapshot(roomId: RoomId): RoomSnapshot;
+  setConnected(roomId: RoomId, playerId: PlayerId, connected: boolean): Room;
+  kick(roomId: RoomId, actorId: PlayerId, targetId: PlayerId): Room;
+  transferHost(roomId: RoomId, actorId: PlayerId, targetId: PlayerId): Room;
+  start(roomId: RoomId, actorId: PlayerId): Room;
+  beginGame(roomId: RoomId): Room;
 }
 
 /** Default in-memory {@link RoomService}. */
@@ -34,7 +39,7 @@ export class InMemoryRoomService implements RoomService {
   private readonly rooms = new Map<RoomId, Room>();
 
   create(input: CreateRoomInput): Room {
-    const room = new Room({ ...input, id: createId() });
+    const room = new Room(input);
     this.rooms.set(room.id, room);
     return room;
   }
@@ -49,6 +54,10 @@ export class InMemoryRoomService implements RoomService {
       throw roomNotFound(roomId);
     }
     return room;
+  }
+
+  snapshot(roomId: RoomId): RoomSnapshot {
+    return this.require(roomId).toSnapshot();
   }
 
   join(roomId: RoomId, playerId: PlayerId, name: string): Room {
@@ -69,20 +78,42 @@ export class InMemoryRoomService implements RoomService {
     return room;
   }
 
-  setHost(roomId: RoomId, playerId: PlayerId): Room {
+  setConnected(
+    roomId: RoomId,
+    playerId: PlayerId,
+    connected: boolean,
+  ): Room {
     const room = this.require(roomId);
-    room.setHost(playerId);
+    room.setConnected(playerId, connected);
     return room;
   }
 
-  start(roomId: RoomId): Room {
+  kick(roomId: RoomId, actorId: PlayerId, targetId: PlayerId): Room {
     const room = this.require(roomId);
-    room.start();
+    room.kick(actorId, targetId);
     return room;
   }
 
-  snapshot(roomId: RoomId): RoomSnapshot {
-    return this.require(roomId).toSnapshot();
+  transferHost(
+    roomId: RoomId,
+    actorId: PlayerId,
+    targetId: PlayerId,
+  ): Room {
+    const room = this.require(roomId);
+    room.transferHost(actorId, targetId);
+    return room;
+  }
+
+  start(roomId: RoomId, actorId: PlayerId): Room {
+    const room = this.require(roomId);
+    room.start(actorId);
+    return room;
+  }
+
+  beginGame(roomId: RoomId): Room {
+    const room = this.require(roomId);
+    room.beginGame();
+    return room;
   }
 }
 

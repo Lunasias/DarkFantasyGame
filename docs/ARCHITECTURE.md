@@ -122,3 +122,35 @@ drizzle/          generated SQL migrations
    behind interfaces.
 4. **Original IP.** No copyrighted characters, maps, names, artwork, or
    formulas are used anywhere.
+
+## Multiplayer server layer (Phase 1)
+
+The server layer (`src/server`, `src/lib/auth`) sits between the domain and the
+presentation and is always authoritative:
+
+- **Authentication** (`src/lib/auth`) — `AuthService` (email/password via
+  `bcryptjs`), hashed opaque session tokens (`sessions` table), `httpOnly`
+  cookie, `requireUser()`. Identity is never client-supplied.
+- **Authoritative room application service**
+  (`src/server/room/room-app-service.ts`) — transactional, auth-aware room
+  operations backed by a formal state machine.
+- **Realtime** (`src/server/realtime`) — provider-independent
+  `RealtimeTransport`, an in-memory implementation, and an SSE stream; the
+  transport is never the source of truth.
+- **Errors / rate limiting** (`src/server/errors.ts`,
+  `src/server/rate-limit`) — typed `AppError` codes and a `RateLimiter` seam.
+
+See [MULTIPLAYER.md](./MULTIPLAYER.md) for the full design.
+
+### Directory additions
+
+```
+src/lib/auth/        auth service, sessions, cookies, schemas
+src/lib/result.ts    typed ActionResult helpers
+src/server/errors.ts app error codes/mapping
+src/server/room/     authoritative room service + actions + zod schemas
+src/server/realtime/ transport interface + in-memory + hub + event types
+src/server/rate-limit/ rate limiter seam
+src/app/api/         /api/me, /api/rooms/[roomCode]/stream
+src/app/{login,register,lobby,rooms/create,rooms/[roomCode]}  UI
+```

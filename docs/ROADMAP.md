@@ -26,3 +26,6 @@ moving on.
 
 Each phase begins with a brief plan in `docs/PROJECT_STATE.md` and ends with
 updated docs plus a passing verification run.
+
+**Status:** Phase 0 (Foundation) ✅ complete · Phase 1 (Multiplayer Foundation)
+✅ implemented · Phases 2+ not started.

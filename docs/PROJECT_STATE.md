@@ -2,70 +2,79 @@
 
 ## Current phase
 
-**Phase 0 — Foundation** (in progress → being verified for completion)
+**Phase 1 — Multiplayer Foundation** (implemented; being finalized & committed)
+
+Phase 0 (Foundation) is complete and committed. This document tracks Phase 1.
 
 ## Completed work
 
-- **Project scaffold** — Next.js 16.3.4 (App Router, React 19.2), TypeScript
-  5.9, Tailwind CSS v4, ESLint flat config. Turbopack is the default for
-  `dev`/`build`.
-- **Tooling** — Vitest + Playwright unit/e2e configs; Drizzle + Neon config;
-  `pnpm` scripts (`dev`, `build`, `start`, `lint`, `lint:fix`, `typecheck`,
-  `test`, `test:watch`, `test:e2e`, `db:*`); strict `tsc --noEmit`.
-- **Dependencies** — `three`, `@react-three/fiber`, `@react-three/drei`,
-  `drizzle-orm`, `@neondatabase/serverless`, `postgres`, `zod` (runtime);
-  `drizzle-kit`, `vitest`, `@playwright/test` (dev).
-- **Game engine (framework-independent)** — domain model under `src/game`:
-  `GameSession`, `Player`, `Character`, `Turn`, `Action`, `GameEvent`,
-  `Board`/`BoardNode`, plus a typed `GameError`/`RoomError` model.
-- **Room domain** — `Room` (lobby), `RoomService` interface with an in-memory
-  `InMemoryRoomService`, host/ready/max-players/status rules, and a
-  `RealtimeTransport` seam for Phase 1.
-- **Database foundation** — Drizzle schema for `users`, `player_profiles`,
-  `characters`, `rooms`, `room_players`, `game_sessions`, `turns`,
-  `game_events`, with PKs, FKs, indexes, unique/index constraints, enums, and
-  relation mappings.
-- **Configuration & hygiene** — `.env.example` (placeholders only), `.gitignore`
-  (ignores real `.env*`), and a secret scanner (`scripts/check-secrets.mjs`).
-- **Tests** — engine (session, player/character), board, and room domain tests.
+- **Authentication** — email/password accounts (`bcryptjs`), server-side
+  sessions (hashed opaque tokens, `httpOnly`/`SameSite=lax` cookie), server
+  actions (`registerAction`/`loginAction`/`logoutAction`/`getMeAction`),
+  `GET /api/me`, `requireUser()`/`getCurrentUser()` for protected actions.
+- **Room state machine** — formal `waiting → starting → in_game → finished →
+  closed` transitions in `src/game/room/state-machine.ts`; `Room` domain updated
+  to join/leave/ready/kick/transfer-host/start/begin-game/close, slot
+  allocation, presence flags.
+- **Authoritative room service** — `src/server/room/room-app-service.ts` with
+  transactional create/join/leave/setReady/kick/transferHost/startGame plus
+  presence/reconnect and IDOR-guarded reads. Re-uses the domain state machine.
+- **Realtime** — preserved provider-independent `RealtimeTransport`; an
+  in-memory implementation + hub for dev/tests; SSE stream
+  (`/api/rooms/[roomCode]/stream`) with auth + membership checks + replay; a
+  client `useRoomStream` hook. The transport is never authoritative.
+- **Event model** — `room_events` table with server-assigned monotonic
+  sequences; typed event types (join/leave/ready/connected/host/state/start).
+- **Idempotency + concurrency** — unique constraints
+  (`(room,user)`, `(room,slot)`, `room_code`) + retry-on-violation + idempotent
+  join/ready/start.
+- **Errors** — `AppError` codes (UNAUTHENTICATED, UNAUTHORIZED, ROOM_NOT_FOUND,
+  ROOM_FULL, ROOM_NOT_JOINABLE, ALREADY_IN_ROOM, NOT_IN_ROOM, NOT_HOST,
+  INVALID_ROOM_STATE, INVALID_ACTION, PLAYER_NOT_FOUND, RATE_LIMITED …) with safe
+  mapping from domain errors; no DB stacks leak.
+- **Rate limiting** — `RateLimiter` abstraction + in-memory dev implementation.
+- **Schema** — added `sessions`, `room_events`; added `room_code` (unique),
+  `slot`/`connected`/`last_seen_at`/`profile_id` to room_players,
+  `state_version` to game_sessions, `password_hash` to users; new
+  `session_phase`/`room_visibility` enums. Migration `0001_*` generated;
+  `src/db/schema.sql` snapshot for the in-memory bootstrap.
+- **UI** — `/login`, `/register`, `/lobby`, `/rooms/create`, `/rooms/[roomCode]`;
+  the room lobby reacts to realtime snapshots (no polling).
+- **Tests** — domain/unit/integration (state machine, room lifecycle,
+  authorization, slots, readiness), auth crypto, realtime transport, and raw-SQL
+  schema constraints. 50 tests pass.
+- **Verification** — `pnpm lint` ✓, `pnpm typecheck` ✓, `pnpm test` ✓ (50),
+  `pnpm build` ✓, `pnpm dev` serves HTTP 200, Playwright E2E browsers installed
+  and smoke tests pass (3/3) for page rendering.
 
 ## Current architecture
 
-Clean three-layer split — Presentation (`src/app`), Server/Transport
-(`src/server`), and a pure Domain (`src/game`), with persistence (`src/db`) and
-shared types (`src/types`) beside them. The engine has no framework dependency.
-See [ARCHITECTURE.md](./ARCHITECTURE.md).
+Server-authoritative three-layer split (Presentation / Server+Transport / pure
+Domain) with persistence via Drizzle + Neon. Authentication, the authoritative
+room service, realtime, and the event store live under `src/server`. See
+[ARCHITECTURE.md](./ARCHITECTURE.md) and [MULTIPLAYER.md](./MULTIPLAYER.md).
 
-## Known issues / notes
+## Known issues / limitations
 
-- `DATABASE_URL` is **not** set (this is correct for Phase 0). Migrations have
-  not been run against a live Neon instance; the schema is type-checked and is
-  the source of truth.
-- `next build` no longer runs linting (Next 16), so `lint` and `typecheck` are
-  separate required gates.
-- `@react-three/*` and `three` are installed but **not yet imported** — the 3D
-  layer arrives in Phase 14.
-- Playwright e2e requires an installed browser and a running `pnpm dev`; the
-  `test:e2e` gate is deferred (Phase 1+). Unit tests are the Phase 0 gate.
-- The remote `node_modules` junction relocation during scaffold setup was
-  repaired by reinstalling from the project root; `pnpm install` is green.
-
-## Verification (Phase 0 checklist — running against this tree)
-
-- [x] `pnpm install` works
-- [x] `pnpm lint` passes
-- [x] `pnpm typecheck` passes
-- [x] `pnpm test` passes (27 tests)
-- [x] `pnpm build` passes (Turbopack; route `/` static)
-- [x] `pnpm dev` serves the app (HTTP 200, title "DarkFantasyGame")
-- [x] Database foundation — Drizzle schema + generated migration (`drizzle/0000_*.sql`)
-- [x] Game engine foundation present
-- [x] Room foundation present
-- [x] Documentation present
-- [x] Git repo initialized, `.gitignore` set, secrets ignored, commit created
+- **No live database in this environment.** `DATABASE_URL` is not set;
+  `getDb()` throws a clear error when absent, so the local dev daemon serves
+  pages but **DB-backed auth/room operations require a configured Neon/Postgres**.
+  Migrations were generated (not applied to a live DB) and validated via a
+  schema-constraint suite on an in-memory Postgres emulator.
+- **Drizzle over pg-mem is incompatible** (the `node-postgres` driver cannot
+  hydrate row values from pg-mem), so the app-service DB integration tests use
+  the domain layer + raw-SQL constraints instead of a full DB round-trip.
+- **Realtime for dev is process-local** (`InMemoryRealtimeTransport`) and the SSE
+  stream works in a single instance; a multi-instance Vercel deployment must
+  substitute a distributed transport behind the same interface.
+- The full multiplayer **game-flow E2E** (create → join → ready → start) could
+  not be run end-to-end because it requires the database; only page-rendering
+  smoke E2E passed.
+- 3D / `@react-three/*` deps remain installed but unused (Phase 14).
 
 ## Next tasks
 
-1. Finish the Phase 0 verification run (fix any failures) and commit.
-2. **Phase 1 — Multiplayer:** realtime transport + auth, room persistence, and
-   create/join/leave over the wire.
+1. Wire up a Neon database (`DATABASE_URL`) and run `pnpm db:migrate` to apply
+   migrations; verify the live DB-backed flow.
+2. **Phase 2 — Turn Engine:** deterministic turn loop, action resolution, and
+   server-authoritative turns on top of the session model.

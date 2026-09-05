@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { RoomError, createRoomService } from "@/game/room";
 
-describe("RoomService", () => {
+describe("RoomService (domain, in-memory)", () => {
   it("creates a room with the host seated and waiting", () => {
     const service = createRoomService();
     const room = service.create({
@@ -12,6 +12,7 @@ describe("RoomService", () => {
     expect(room.statusValue).toBe("waiting");
     expect(room.host).toBe("p1");
     expect(room.playerCount).toBe(1);
+    expect(room.code).toHaveLength(6);
   });
 
   it("joins players up to the configured maximum", () => {
@@ -66,11 +67,9 @@ describe("RoomService", () => {
     service.join(room.id, "p2", "Vex");
     service.setReady(room.id, "p1", true);
     service.setReady(room.id, "p2", true);
-    expect(room.statusValue).toBe("ready");
     expect(room.canStart).toBe(true);
 
     service.setReady(room.id, "p2", false);
-    expect(room.statusValue).toBe("waiting");
     expect(room.canStart).toBe(false);
   });
 
@@ -82,7 +81,7 @@ describe("RoomService", () => {
       hostName: "Morgath",
     });
     service.join(room.id, "p2", "Vex");
-    expect(() => service.start(room.id)).toThrow(RoomError);
+    expect(() => service.start(room.id, "p1")).toThrow(RoomError);
   });
 
   it("starts a room once all players are ready", () => {
@@ -95,11 +94,11 @@ describe("RoomService", () => {
     service.join(room.id, "p2", "Vex");
     service.setReady(room.id, "p1", true);
     service.setReady(room.id, "p2", true);
-    service.start(room.id);
-    expect(room.statusValue).toBe("in_progress");
+    service.start(room.id, "p1");
+    expect(room.statusValue).toBe("starting");
   });
 
-  it("prevents joining a room already in progress", () => {
+  it("prevents joining a room that has left the waiting state", () => {
     const service = createRoomService();
     const room = service.create({
       name: "Crypt",
@@ -109,7 +108,7 @@ describe("RoomService", () => {
     service.join(room.id, "p2", "Vex");
     service.setReady(room.id, "p1", true);
     service.setReady(room.id, "p2", true);
-    service.start(room.id);
+    service.start(room.id, "p1");
     expect(() => service.join(room.id, "p3", "Thane")).toThrow(RoomError);
   });
 });
