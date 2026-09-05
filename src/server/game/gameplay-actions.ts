@@ -46,6 +46,19 @@ export async function attackSessionAction(
   });
 }
 
+/** Start a PvE encounter at the character's current node. */
+export async function startEncounterAction(
+  sessionId: string,
+  characterId: string,
+): Promise<ApiResult<unknown>> {
+  return runAction(async () => {
+    const user = await requireUser();
+    const db = await getDb();
+    const service = new GameplayService(db, getRealtimeTransport());
+    return service.startEncounter(user.id, sessionId, characterId);
+  });
+}
+
 async function run(userId: string, fn: (svc: GameplayService) => Promise<unknown>): Promise<ApiResult<unknown>> {
   const db = await getDb();
   return runAction(async () => fn(new GameplayService(db, getRealtimeTransport())));

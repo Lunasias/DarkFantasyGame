@@ -9,12 +9,14 @@ import {
   loadGameState,
   persistCharacter,
   persistCombatAttack,
+  persistCombatStart,
   persistInventorySet,
   persistMove,
   persistReward,
   persistShopBuy,
   persistShopSell,
 } from "../../db/game-store";
+import { combatParticipants } from "../../db/schema/combat-participants";
 import { AppError } from "../errors";
 import { createId } from "../../game/engine/id";
 import { createRng } from "../../game/engine/rng";
@@ -31,7 +33,14 @@ import {
   resolveWorldEvent,
   syncQuestProgress,
 } from "../../db/content-store";
-import { getTown } from "../../game/content";
+import { effectiveStatsFor } from "../../game/jobs";
+import {
+  getTown,
+  getMonster,
+  encounterForNode,
+  monsterParticipantId,
+  encounterRewardFor,
+} from "../../game/content";
 import type { RealtimeTransport } from "../transport";
 
 /**
@@ -131,14 +140,16 @@ export class GameplayService {
   }
 
   /**
-   * Authoritative attack. Validates session membership + active turn + combat
-   * state, applies server-derived damage from the participant's effective stats,
-   * persists HP/turn/victory transactionally, and on victory grants the reward
-   * exactly once (durable reward_claims idempotency).
+   * Authoritative attack. Combat uses the combat's own active combatant (and
+   * participant membership + ownership) as the authority — NOT the session's
+   * turn-based active player, so PvE encounters resolve correctly. Applies
+   * server-derived damage from the snapshot-at-start effective stats, persists
+   * HP/combat-turn/victory transactionally, and on victory grants the reward
+   * exactly once (durable reward_claims idempotency). For a PvE encounter the
+   * monster's defined reward is used; otherwise the default victory reward.
    */
   async attack(actorId: string, sessionId: string, characterId: string, targetId: string) {
     const roomId = await this.assertSessionAccess(actorId, sessionId);
-    await this.requireActive(actorId, sessionId);
     await this.assertCharacterOwner(actorId, characterId);
     if (!targetId || targetId === characterId) throw new AppError("INVALID_ACTION", "Invalid target");
     const state = await loadGameState(this.db, sessionId);
@@ -156,9 +167,16 @@ export class GameplayService {
 
     let reward: { alreadyClaimed: boolean } | null = null;
     if (result.victory) {
+      const participants = await this.db.select().from(combatParticipants)
+        .where(eq(combatParticipants.combatId, state.combat.id));
+      const pve = encounterRewardFor(participants.map((p) => p.characterId));
       reward = await persistReward(this.db, {
-        characterId, rewardKey: `combat:${state.combat.id}`,
-        experience: 100, gold: 50, items: [], itemDrops: true,
+        characterId,
+        rewardKey: `combat:${state.combat.id}`,
+        experience: pve?.experience ?? 100,
+        gold: pve?.gold ?? 50,
+        items: [],
+        itemDrops: true,
       });
     }
     return {
@@ -169,6 +187,52 @@ export class GameplayService {
       winner: result.winner,
       reward,
     };
+  }
+
+  /**
+   * Authoritative PvE encounter start. Requires session membership + character
+   * ownership, the challenger's character standing on an encounter node, no
+   * combat already in progress, and a living challenger. Starts a combat with
+   * the encounter's monster using the existing persistent combat snapshot
+   * (participant stats captured at start).
+   */
+  async startEncounter(actorId: string, sessionId: string, characterId: string) {
+    const roomId = await this.assertSessionAccess(actorId, sessionId);
+    const char = await this.assertCharacterOwner(actorId, characterId);
+    const state = await loadGameState(this.db, sessionId);
+    if (state.combat) {
+      if (state.combat.status === "completed") throw new AppError("INVALID_ACTION", "Combat already completed");
+      throw new AppError("INVALID_ACTION", "Combat already in progress");
+    }
+    const nodeId = state.positions.find((p) => p.characterId === characterId)?.nodeId ?? null;
+    const encounter = encounterForNode(nodeId ?? "");
+    if (!encounter) throw new AppError("INVALID_ACTION", "There is no encounter here");
+    const monster = getMonster(encounter.monsterId);
+    if (!monster) throw new AppError("INVALID_ACTION", "Encounter is not configured");
+
+    const c = createCharacter({
+      name: char.name, archetype: char.archetype,
+      stats: { maxHealth: char.maxHealth, health: char.health, attack: 10, defense: 5, speed: 8 },
+    });
+    c.jobId = char.jobId; c.level = char.level; c.experience = char.experience; c.gold = char.gold;
+    const eff = effectiveStatsFor(c);
+    if (eff.health <= 0) throw new AppError("INVALID_ACTION", "Your character is defeated");
+
+    const combatId = await persistCombatStart(this.db, {
+      gameSessionId: sessionId,
+      participants: [
+        { characterId, hp: eff.health, maxHp: eff.maxHealth, attack: eff.attack, defense: eff.defense },
+        {
+          characterId: monsterParticipantId(monster.id),
+          hp: monster.maxHealth, maxHp: monster.maxHealth,
+          attack: monster.attack, defense: monster.defense,
+        },
+      ],
+    });
+    await this.publish(roomId, "ENCOUNTER_STARTED", {
+      characterId, monsterId: monster.id, nodeId, combatId,
+    });
+    return { combatId, monster: { id: monster.id, name: monster.name }, nodeId };
   }
 
   /** Durable, idempotent reward via reward_claims unique key. */

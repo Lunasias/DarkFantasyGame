@@ -8,7 +8,13 @@ import {
   attackSessionAction,
   moveSessionAction,
   rollDiceAction,
+  startEncounterAction,
 } from "@/server/game/gameplay-actions";
+import {
+  encounterForNode,
+  isMonsterParticipant,
+  monsterForParticipant,
+} from "@/game/content";
 import { unwrap } from "@/lib/unwrap";
 import type { AuthUser } from "@/lib/auth/auth-service";
 
@@ -52,6 +58,9 @@ export function GameScreen({ sessionId }: { sessionId: string }) {
   const combat = snapshot.combat;
   const meCombatant = meChar ? combat?.participants.find((p) => p.characterId === meChar.characterId) : undefined;
   const myTurn = snapshot.activePlayer === me?.id;
+  const meNode = meChar ? snapshot.positions.find((p) => p.characterId === meChar.characterId)?.nodeId ?? null : null;
+  const encounter = meNode ? encounterForNode(meNode) : null;
+  const canAttack = !!meChar && !!meCombatant && !!combat && combat.status === "active" && combat.activeCombatant === meChar.characterId;
 
   return (
     <main className="flex flex-1 flex-col gap-4 px-4 py-4 lg:flex-row">
@@ -157,27 +166,34 @@ export function GameScreen({ sessionId }: { sessionId: string }) {
               <span className="text-zinc-100">{combat.winner?.slice(0, 8) ?? "—"}</span>
             </p>
             <ul className="mt-2 space-y-2 text-sm">
-              {combat.participants.map((p) => (
-                <li key={p.characterId} className="flex items-center gap-2" style={{ opacity: p.alive ? 1 : 0.35 }}>
-                  <span className="h-2 w-2 rounded-full bg-emerald-500" style={{ opacity: p.alive ? 1 : 0.2 }} />
-                  <span className="font-mono">{p.characterId.slice(0, 6)}</span>
-                  <span className="ml-auto flex items-center gap-2">
-                    <span className="h-1.5 w-16 overflow-hidden rounded bg-zinc-800">
-                      <span
-                        className="block h-full bg-emerald-500 transition-all duration-500"
-                        style={{ width: `${(p.hp / p.maxHp) * 100}%` }}
-                      />
+              {combat.participants.map((p) => {
+                const monster = monsterForParticipant(p.characterId);
+                return (
+                  <li key={p.characterId} className="flex items-center gap-2" style={{ opacity: p.alive ? 1 : 0.35 }}>
+                    <span className="h-2 w-2 rounded-full bg-emerald-500" style={{ opacity: p.alive ? 1 : 0.2 }} />
+                    <span className={isMonsterParticipant(p.characterId) ? "text-red-300" : "font-mono"}>
+                      {monster?.name ?? p.characterId.slice(0, 6)}
                     </span>
-                    <span className="text-xs text-zinc-400">{p.hp}/{p.maxHp}</span>
-                  </span>
-                  {combat.activeCombatant === p.characterId && <span className="text-amber-300">●</span>}
-                </li>
-              ))}
+                    <span className="ml-auto flex items-center gap-2">
+                      <span className="h-1.5 w-16 overflow-hidden rounded bg-zinc-800">
+                        <span
+                          className="block h-full bg-emerald-500 transition-all duration-500"
+                          style={{ width: `${(p.hp / p.maxHp) * 100}%` }}
+                        />
+                      </span>
+                      <span className="text-xs text-zinc-400">{p.hp}/{p.maxHp}</span>
+                    </span>
+                    {combat.activeCombatant === p.characterId && <span className="text-amber-300">●</span>}
+                  </li>
+                );
+              })}
             </ul>
             {combat.status === "completed" && (
-              <p className="mt-3 text-sm font-medium text-emerald-400">Victory — winner {combat.winner?.slice(0, 8) ?? "unknown"}</p>
+              <p className="mt-3 text-sm font-medium text-emerald-400">
+                Victory — winner {monsterForParticipant(combat.winner ?? "")?.name ?? combat.winner?.slice(0, 8) ?? "unknown"}
+              </p>
             )}
-            {myTurn && meChar && meCombatant && combat.status === "active" && (
+            {canAttack && (
               <button
                 disabled={busy}
                 onClick={() => {
@@ -193,6 +209,21 @@ export function GameScreen({ sessionId }: { sessionId: string }) {
                 Attack
               </button>
             )}
+          </Section>
+        )}
+
+        {!combat && meChar && encounter && (
+          <Section title="Encounter">
+            <p className="text-sm text-zinc-300">
+              A monster lurks at <span className="text-zinc-100">{meNode}</span>.
+            </p>
+            <button
+              disabled={busy}
+              onClick={() => guard(() => startEncounterAction(sessionId, meChar.characterId))}
+              className="mt-3 rounded bg-red-700 px-3 py-1.5 text-sm text-white disabled:opacity-50"
+            >
+              Start encounter
+            </button>
           </Section>
         )}
       </aside>

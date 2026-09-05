@@ -123,6 +123,23 @@ export {
   allObjectivesMet,
 } from "./rewards";
 
+export {
+  MONSTER_DEFINITIONS,
+  ENCOUNTER_DEFINITIONS,
+  MONSTER_PREFIX,
+  getMonster,
+  getEncounter,
+  encounterForNode,
+  allMonsters,
+  allEncounters,
+  monsterParticipantId,
+  isMonsterParticipant,
+  monsterForParticipant,
+  encounterRewardFor,
+  type MonsterDefinition,
+  type EncounterDefinition,
+} from "./encounters";
+
 export type ContentEventType =
   | "QUEST_ACCEPTED"
   | "QUEST_PROGRESS"

@@ -12,6 +12,9 @@ import { roomPlayers } from "@/db/schema/room-players";
 import { items } from "@/db/schema/items";
 import { boardPositions } from "@/db/schema/board-positions";
 import { combats } from "@/db/schema/combats";
+import { combatParticipants } from "@/db/schema/combat-participants";
+import { rewardClaims } from "@/db/schema/reward-claims";
+import { monsterParticipantId } from "@/game/content";
 import { createId } from "@/game/engine/id";
 import { createRng } from "@/game/engine/rng";
 import {
@@ -223,6 +226,73 @@ describe.runIf(ENABLED)("Phase 19 content persistence (real Neon)", () => {
       expect(snap.content[host.characterId]).toBeTruthy();
       expect(snap.content[host.characterId].quests[0].questId).toBe("first_blood");
       await expect(getGameSnapshot(db, outsider.userId, sessionId)).rejects.toThrow();
+    }, 30000);
+  });
+
+  describe("PvE encounter (real Neon)", () => {
+    it("starts a PvE combat, persists it, and grants exactly-once reward on victory", async () => {
+      const host = await createChar("pve_host");
+      const guest = await createChar("pve_guest");
+      const outsider = await createChar("pve_out");
+      const { sessionId } = await setupSession(host, guest, 2);
+      const svc = new GameplayService(db);
+      const monsterId = "ash_skeleton";
+      const mPid = monsterParticipantId(monsterId);
+
+      // Place the challenger on the encounter node (B).
+      await placeAt(sessionId, host.characterId, "B");
+
+      // Invalid starts: wrong node (not on encounter), non-member, non-owner.
+      await expect(svc.startEncounter(outsider.userId, sessionId, host.characterId)).rejects.toThrow(); // non-member
+      await expect(svc.startEncounter(guest.userId, sessionId, host.characterId)).rejects.toThrow(); // wrong owner
+      await placeAt(sessionId, host.characterId, "C");
+      await expect(svc.startEncounter(host.userId, sessionId, host.characterId)).rejects.toThrow(); // no encounter
+      await placeAt(sessionId, host.characterId, "B");
+
+      const started = await svc.startEncounter(host.userId, sessionId, host.characterId);
+      expect(started.monster.id).toBe(monsterId);
+      const combatRow = await db.select().from(combats).where(eq(combats.id, started.combatId)).limit(1);
+      expect(combatRow[0]?.status).toBe("active");
+      expect(combatRow[0]?.activeCombatant).toBe(host.characterId);
+
+      const parts = await db.select().from(combatParticipants)
+        .where(eq(combatParticipants.combatId, started.combatId));
+      const hero = parts.find((p) => p.characterId === host.characterId);
+      const monster = parts.find((p) => p.characterId === mPid);
+      expect(hero).toBeTruthy();
+      expect(monster).toBeTruthy();
+      expect(hero?.maxHp).toBe(100);
+      expect(monster?.hp).toBe(60);
+
+      // A second start is rejected while combat is active.
+      await expect(svc.startEncounter(host.userId, sessionId, host.characterId)).rejects.toThrow();
+
+      // Force the monster to 1 HP so the challenger's next attack is the kill.
+      await db.update(combatParticipants).set({ hp: 1 }).where(eq(combatParticipants.id, monster!.id));
+      const attack = await svc.attack(host.userId, sessionId, host.characterId, mPid);
+      expect(attack.defeated).toBe(true);
+      expect(attack.victory).toBe(true);
+      expect(attack.winner).toBe(host.characterId);
+      expect(attack.reward?.alreadyClaimed).toBe(false);
+
+      const done = await db.select().from(combats).where(eq(combats.id, started.combatId)).limit(1);
+      expect(done[0]?.status).toBe("completed");
+      expect(done[0]?.winner).toBe(host.characterId);
+
+      // Exactly one reward claim (PvE reward: exp 150 / gold 80).
+      const claims = await db.select().from(rewardClaims)
+        .where(eq(rewardClaims.characterId, host.characterId));
+      const claim = claims.find((c) => c.rewardKey === `combat:${started.combatId}`);
+      expect(claim).toBeTruthy();
+      expect(claim?.experience).toBe(150);
+      expect(claim?.gold).toBe(80);
+      expect(claims.filter((c) => c.rewardKey === `combat:${started.combatId}`)).toHaveLength(1);
+
+      // Completed combat rejects further attacks; snapshot reconstructs combat.
+      await expect(svc.attack(host.userId, sessionId, host.characterId, mPid)).rejects.toThrow();
+      const snap = await getGameSnapshot(db, host.userId, sessionId);
+      expect(snap.combat?.status).toBe("completed");
+      expect(snap.combat?.winner).toBe(host.characterId);
     }, 30000);
   });
 });
