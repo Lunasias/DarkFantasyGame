@@ -103,7 +103,9 @@ export class GameplayService {
   }
 
   /** Authoritative move: server rolls the dice and validates the destination
-   *  against the static board graph within the rolled distance. */
+   *  against the static board graph within the rolled distance. On a successful
+   *  move the session transitions to the active phase and the turn advances to
+   *  the next player (both server-derived). */
   async move(actorId: string, sessionId: string, nodeId: string) {
     const roomId = await this.assertSessionAccess(actorId, sessionId);
     await this.requireActive(actorId, sessionId);
@@ -119,9 +121,13 @@ export class GameplayService {
       throw new AppError("INVALID_ACTION", `Node "${nodeId}" is not reachable within ${dice} step(s)`);
     }
     const next = state.stateVersion + 1;
-    await persistMove(this.db, { sessionId, characterId: actorId, nodeId, turn: state.currentTurnNumber, stateVersion: next });
-    await this.publish(roomId, "PLAYER_POSITION_CHANGED", { characterId: actorId, nodeId, dice, stateVersion: next });
-    return { nodeId, dice, stateVersion: next };
+    const nextTurn = state.currentTurnNumber + 1;
+    await persistMove(this.db, {
+      sessionId, characterId: actorId, nodeId,
+      turn: nextTurn, stateVersion: next, phase: "active",
+    });
+    await this.publish(roomId, "PLAYER_POSITION_CHANGED", { characterId: actorId, nodeId, dice, stateVersion: next, turn: nextTurn });
+    return { nodeId, dice, stateVersion: next, turn: nextTurn };
   }
 
   /**

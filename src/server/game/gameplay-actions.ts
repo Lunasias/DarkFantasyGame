@@ -23,7 +23,7 @@ export async function rollDiceAction(
 export async function moveSessionAction(
   sessionId: string,
   nodeId: string,
-): Promise<ApiResult<{ nodeId: string; stateVersion: number }>> {
+): Promise<ApiResult<{ nodeId: string; dice: number; stateVersion: number; turn: number }>> {
   return runAction(async () => {
     const user = await requireUser();
     const db = await getDb();

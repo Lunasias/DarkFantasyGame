@@ -99,6 +99,8 @@ export async function persistMove(db: Db, input: {
   nodeId: string;
   turn: number;
   stateVersion: number;
+  /** When set, also transitions the session phase in the same transaction. */
+  phase?: "lobby" | "active" | "finished";
 }) {
   await db.transaction(async (tx) => {
     const exec = tx as unknown as Db;
@@ -111,7 +113,11 @@ export async function persistMove(db: Db, input: {
       });
     await exec
       .update(gameSessions)
-      .set({ currentTurnNumber: input.turn, stateVersion: input.stateVersion })
+      .set({
+        currentTurnNumber: input.turn,
+        stateVersion: input.stateVersion,
+        ...(input.phase ? { phase: input.phase } : {}),
+      })
       .where(eq(gameSessions.id, input.sessionId));
   });
 }

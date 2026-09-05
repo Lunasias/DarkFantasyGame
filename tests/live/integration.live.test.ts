@@ -24,6 +24,7 @@ import { RewardService } from "@/game/rewards";
 import { Board, BoardEngine, BoardNode } from "@/game/board";
 import { CombatEngine, Combatant } from "@/game/combat";
 import { getGameSnapshot } from "@/server/game/game-state";
+import { GameplayService } from "@/server/game/gameplay";
 
 const ENABLED = !!process.env.DATABASE_URL && !process.env.CI;
 
@@ -278,6 +279,58 @@ describe.runIf(ENABLED)("live integration (real Neon)", () => {
 
       const outsider = await register("resume_out");
       await expect(getGameSnapshot(db, outsider.user.id, started.gameSessionId)).rejects.toThrow();
+    }, 30000);
+  });
+
+  describe("playable core loop (turn advance + authority)", () => {
+    it("starts a ready room, advances turn on move, and rejects non-members", async () => {
+      const host = await register("loop_host");
+      const guest = await register("loop_guest");
+      const outsider = await register("loop_out");
+
+      const room = await roomsSvc.createRoom(host.user, { name: "Loop", maxPlayers: 2 });
+      await roomsSvc.joinRoom(guest.user, { roomCode: room.code });
+      // Cannot start while not all ready.
+      await expect(roomsSvc.startGame(host.user, { roomId: room.id })).rejects.toThrow();
+      await roomsSvc.setReady(host.user, { roomId: room.id, ready: true });
+      await roomsSvc.setReady(guest.user, { roomId: room.id, ready: true });
+      const started = await roomsSvc.startGame(host.user, { roomId: room.id });
+      expect(started.gameSessionId).toBeTruthy();
+      sessionIds.push(started.gameSessionId);
+
+      // Session is created at turn 1, phase lobby.
+      const s1 = await db.select().from(gameSessions).where(eq(gameSessions.id, started.gameSessionId)).limit(1);
+      expect(s1[0]?.currentTurnNumber).toBe(1);
+      expect(s1[0]?.phase).toBe("lobby");
+
+      const svc = new GameplayService(db, realtime);
+      // Turn 1 → host (slot 0) is active.
+      const snap1 = await getGameSnapshot(db, host.user.id, started.gameSessionId);
+      expect(snap1.activePlayer).toBe(host.user.id);
+
+      // Non-member can never move.
+      await expect(svc.move(outsider.user.id, started.gameSessionId, "B")).rejects.toThrow();
+      // Guest is not active on turn 1.
+      await expect(svc.move(guest.user.id, started.gameSessionId, "B")).rejects.toThrow();
+
+      // Host moves from A → B; turn advances and phase becomes active.
+      const m = await svc.move(host.user.id, started.gameSessionId, "B");
+      expect(m.nodeId).toBe("B");
+      expect(m.turn).toBe(2);
+      const s2 = await db.select().from(gameSessions).where(eq(gameSessions.id, started.gameSessionId)).limit(1);
+      expect(s2[0]?.currentTurnNumber).toBe(2);
+      expect(s2[0]?.phase).toBe("active");
+
+      // Now guest is active; host is not.
+      const snap2 = await getGameSnapshot(db, guest.user.id, started.gameSessionId);
+      expect(snap2.activePlayer).toBe(guest.user.id);
+      await expect(svc.move(host.user.id, started.gameSessionId, "C")).rejects.toThrow();
+      // Guest (still at A) moves to adjacent B.
+      const g = await svc.move(guest.user.id, started.gameSessionId, "B");
+      expect(g.turn).toBe(3);
+
+      // An out-of-range destination is rejected (server validation).
+      await expect(svc.move(host.user.id, started.gameSessionId, "GHOST")).rejects.toThrow();
     }, 30000);
   });
 

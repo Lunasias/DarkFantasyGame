@@ -482,6 +482,7 @@ export class RoomAppService {
         id: sessionId,
         roomId: room.id,
         phase: "lobby",
+        currentTurnNumber: 1,
         stateVersion: 0,
       });
 

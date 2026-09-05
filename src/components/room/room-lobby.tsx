@@ -17,7 +17,7 @@ import { useRoomStream } from "./use-room-stream";
 
 export function RoomLobby({ roomCode }: { roomCode: string }) {
   const router = useRouter();
-  const { room, connected } = useRoomStream(roomCode);
+  const { room, connected, events } = useRoomStream(roomCode);
   const [me, setMe] = useState<AuthUser | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -28,6 +28,21 @@ export function RoomLobby({ roomCode }: { roomCode: string }) {
       .then(setMe)
       .catch(() => setMe(null));
   }, []);
+
+  // When any player (host or member / reconnect) sees a GAME_STARTED event with a
+  // server-created sessionId, navigate to the play screen. The sessionId always
+  // comes from the server; the client never invents it.
+  useEffect(() => {
+    for (const e of events) {
+      if (e.kind === "room_event" && e.event?.type === "GAME_STARTED") {
+        const gameSessionId = (e.event.payload as { gameSessionId?: string } | null)?.gameSessionId;
+        if (gameSessionId) {
+          router.push(`/play/${gameSessionId}`);
+          return;
+        }
+      }
+    }
+  }, [events, router]);
 
   async function guard(fn: () => Promise<unknown>) {
     setBusy(true);
@@ -172,7 +187,9 @@ export function RoomLobby({ roomCode }: { roomCode: string }) {
             onClick={() =>
               guard(async () => {
                 const result = await unwrap(startGameAction({ roomId: room.id }));
+                // Only navigate after the server confirms a session was created.
                 setGameSessionId(result.gameSessionId);
+                router.push(`/play/${result.gameSessionId}`);
               })
             }
             className="rounded px-4 py-2 bg-emerald-700 text-white disabled:opacity-40"
