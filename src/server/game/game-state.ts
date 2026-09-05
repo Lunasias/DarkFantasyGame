@@ -7,8 +7,12 @@ import { characters } from "../../db/schema/characters";
 import { playerProfiles } from "../../db/schema/player-profiles";
 import { characterInventory } from "../../db/schema/character-inventory";
 import { combatParticipants } from "../../db/schema/combat-participants";
+import { shops } from "../../db/schema/shops";
+import { shopInventory } from "../../db/schema/shop-inventory";
 import { loadGameState } from "../../db/game-store";
 import { getCharacterContentState, type CharacterContentState } from "../../db/content-store";
+import { getItem } from "../../game/items/items";
+import { getNodeInteractions } from "../../game/content";
 import { AppError } from "../errors";
 import { createCharacter, type CharacterStats } from "../../game/engine/character";
 import { effectiveStatsFor } from "../../game/jobs";
@@ -43,7 +47,7 @@ export async function getGameSnapshot(db: Db, actorId: string, sessionId: string
     characterId: string; userId: string; jobId: string | null; level: number;
     experience: number; health: number; maxHealth: number; gold: number; mana: number; maxMana: number;
     effectiveStats: CharacterStats;
-    inventory: { itemId: string; quantity: number }[];
+    inventory: { itemId: string; quantity: number; name: string; category: string; slot: string | null; stackable: boolean; equippedSlot: string | null }[];
     equipment: Record<string, string>;
   }[] = [];
   for (const m of members) {
@@ -76,7 +80,18 @@ export async function getGameSnapshot(db: Db, actorId: string, sessionId: string
       mana: char.mana,
       maxMana: maxManaFor(char.level),
       effectiveStats: effectiveStatsFor(c),
-      inventory: invs.map((inv) => ({ itemId: inv.itemId, quantity: inv.quantity })),
+      inventory: invs.map((inv) => {
+        const item = getItem(inv.itemId);
+        return {
+          itemId: inv.itemId,
+          quantity: inv.quantity,
+          name: item?.name ?? inv.itemId,
+          category: item?.category ?? "misc",
+          slot: item?.slot ?? null,
+          stackable: item?.stackable ?? false,
+          equippedSlot: inv.equippedSlot,
+        };
+      }),
       equipment: Object.fromEntries(c.equipment),
     });
   }
@@ -120,6 +135,40 @@ export async function getGameSnapshot(db: Db, actorId: string, sessionId: string
     content[ch.characterId] = await getCharacterContentState(db, ch.characterId);
   }
 
+  // Server-derived shop read-model: only exposed when the actor's character is
+  // at a town that offers a shop service. Prices come from the shops store.
+  let shop: { townId: string; shops: { id: string; name: string; inventory: { itemId: string; name: string; category: string; slot: string | null; stackable: boolean; buyPrice: number; sellPrice: number }[] }[] } | null = null;
+  const actorChar = charactersOut.find((c) => c.userId === actorId);
+  const actorNode = actorChar ? state.positions.find((p) => p.characterId === actorChar.characterId)?.nodeId ?? null : null;
+  if (actorNode) {
+    const town = getNodeInteractions(actorNode).town;
+    if (town?.services.includes("shop")) {
+      const shopRows = await db.select().from(shops);
+      const invRows = await db.select().from(shopInventory);
+      shop = {
+        townId: town.id,
+        shops: shopRows.map((s) => ({
+          id: s.id,
+          name: s.name,
+          inventory: invRows
+            .filter((si) => si.shopId === s.id)
+            .map((si) => {
+              const item = getItem(si.itemId);
+              return {
+                itemId: si.itemId,
+                name: item?.name ?? si.itemId,
+                category: item?.category ?? "misc",
+                slot: item?.slot ?? null,
+                stackable: item?.stackable ?? false,
+                buyPrice: si.buyPrice,
+                sellPrice: si.sellPrice,
+              };
+            }),
+        })),
+      };
+    }
+  }
+
   return {
     sessionId,
     roomId: session.roomId,
@@ -132,5 +181,6 @@ export async function getGameSnapshot(db: Db, actorId: string, sessionId: string
     characters: charactersOut,
     combat,
     content,
+    shop,
   };
 }

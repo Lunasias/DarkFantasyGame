@@ -16,6 +16,10 @@ import {
   enterTownAction,
   enterDungeonAction,
   completeDungeonAction,
+  buySessionAction,
+  sellSessionAction,
+  equipItemSessionAction,
+  unequipItemSessionAction,
 } from "@/server/game/gameplay-actions";
 import {
   encounterForNode,
@@ -25,6 +29,7 @@ import {
   allQuests,
 } from "@/game/content";
 import { allSkills } from "@/game/combat";
+import { expToNextLevel } from "@/game/progression";
 import { unwrap } from "@/lib/unwrap";
 import type { AuthUser } from "@/lib/auth/auth-service";
 
@@ -149,27 +154,118 @@ export function GameScreen({ sessionId }: { sessionId: string }) {
 
         {meChar && (
           <Section title="Character">
-            <p className="text-sm text-zinc-300">
-              {meChar.jobId ?? "No job"} · Lv {meChar.level} · EXP {meChar.experience}
-            </p>
-            <p className="text-sm text-zinc-300">
-              HP {meChar.health}/{meChar.maxHealth} · Gold {meChar.gold}
+            <p className="text-sm text-zinc-200">
+              {meChar.jobId ?? "No job"} · Level {meChar.level}
             </p>
             <p className="mt-1 text-xs text-zinc-500">
-              ATK {meChar.effectiveStats.attack} · DEF {meChar.effectiveStats.defense}
+              EXP {meChar.experience} / next {expToNextLevel(meChar.level)}
+            </p>
+            <div className="mt-1 h-1.5 w-full overflow-hidden rounded bg-zinc-800">
+              <div
+                className="h-full bg-blue-600"
+                style={{ width: `${Math.min(100, Math.round((meChar.experience / expToNextLevel(meChar.level)) * 100))}%` }}
+              />
+            </div>
+            <p className="mt-2 text-sm text-zinc-300">
+              HP {meChar.health}/{meChar.maxHealth} · MP {meChar.mana}/{meChar.maxMana} · Gold {meChar.gold}
             </p>
             <p className="mt-1 text-xs text-zinc-500">
-              Inventory:{" "}
-              {meChar.inventory.length === 0
-                ? "empty"
-                : meChar.inventory.map((i) => `${i.itemId}×${i.quantity}`).join(", ")}
+              ATK {meChar.effectiveStats.attack} · DEF {meChar.effectiveStats.defense} · SPD {meChar.effectiveStats.speed}
             </p>
-            <p className="mt-1 text-xs text-zinc-500">
-              Equipped:{" "}
-              {Object.keys(meChar.equipment).length === 0
-                ? "none"
-                : Object.entries(meChar.equipment).map(([slot, item]) => `${slot}=${item}`).join(", ")}
-            </p>
+            {Object.keys(meChar.equipment).length > 0 && (
+              <ul className="mt-2 space-y-1 text-xs text-zinc-400">
+                {Object.entries(meChar.equipment).map(([slot, itemId]) => (
+                  <li key={slot} className="flex items-center justify-between">
+                    <span className="text-emerald-300">{slot}</span>
+                    <span>{itemId}</span>
+                    <button
+                      disabled={busy}
+                      onClick={() => guard(() => unequipItemSessionAction(sessionId, meChar.characterId, slot))}
+                      className="rounded bg-zinc-800 px-2 py-0.5 text-xs text-zinc-300 disabled:opacity-50"
+                    >
+                      Unequip
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Section>
+        )}
+
+        {meChar && (
+          <Section title="Inventory">
+            {meChar.inventory.length === 0 ? (
+              <p className="text-xs text-zinc-600">Empty.</p>
+            ) : (
+              <ul className="space-y-2 text-sm">
+                {meChar.inventory.map((i) => {
+                  const equippable = i.slot != null;
+                  const equipped = i.equippedSlot != null;
+                  return (
+                    <li key={i.itemId} className="rounded border border-zinc-800 bg-zinc-900/50 p-2.5">
+                      <div className="flex items-center justify-between">
+                        <span className="text-zinc-200">{i.name}</span>
+                        <span className="text-xs text-zinc-500">×{i.quantity}</span>
+                      </div>
+                      <p className="text-xs text-zinc-500">
+                        {i.category} {i.slot ? `· ${i.slot}` : ""} {equipped ? "· equipped" : ""}
+                      </p>
+                      {equippable && !equipped && (
+                        <button
+                          disabled={busy}
+                          onClick={() => guard(() => equipItemSessionAction(sessionId, meChar.characterId, i.itemId))}
+                          className="mt-2 rounded bg-emerald-700 px-2.5 py-1 text-xs text-white disabled:opacity-50"
+                        >
+                          Equip
+                        </button>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </Section>
+        )}
+
+        {meChar && snapshot.shop && (
+          <Section title="Shop">
+            <p className="text-xs text-zinc-500">Gold {meChar.gold}</p>
+            {snapshot.shop.shops.map((shop) => (
+              <div key={shop.id} className="mt-2">
+                <p className="text-sm text-zinc-200">{shop.name}</p>
+                <ul className="mt-1 space-y-2 text-sm">
+                  {shop.inventory.map((item) => {
+                    const owned = meChar.inventory.find((i) => i.itemId === item.itemId)?.quantity ?? 0;
+                    const canBuy = meChar.gold >= item.buyPrice;
+                    return (
+                      <li key={item.itemId} className="rounded border border-zinc-800 bg-zinc-900/50 p-2.5">
+                        <div className="flex items-center justify-between">
+                          <span className="text-zinc-200">{item.name}</span>
+                          <span className="text-xs text-zinc-500">{item.buyPrice} g</span>
+                        </div>
+                        <p className="text-xs text-zinc-500">{item.category} · owned {owned}</p>
+                        <div className="mt-2 flex gap-2">
+                          <button
+                            disabled={busy || !canBuy}
+                            onClick={() => guard(() => buySessionAction(sessionId, meChar.characterId, shop.id, item.itemId, 1))}
+                            className="rounded bg-emerald-700 px-2.5 py-1 text-xs text-white disabled:opacity-40"
+                          >
+                            Buy
+                          </button>
+                          <button
+                            disabled={busy || owned < 1}
+                            onClick={() => guard(() => sellSessionAction(sessionId, meChar.characterId, shop.id, item.itemId, 1))}
+                            className="rounded bg-zinc-800 px-2.5 py-1 text-xs text-zinc-300 disabled:opacity-40"
+                          >
+                            Sell ({item.sellPrice} g)
+                          </button>
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            ))}
           </Section>
         )}
 

@@ -27,7 +27,11 @@ export interface GameSnapshot {
     readonly mana: number;
     readonly maxMana: number;
     readonly effectiveStats: { maxHealth: number; health: number; attack: number; defense: number; speed: number };
-    readonly inventory: readonly { itemId: string; quantity: number }[];
+    readonly inventory: readonly {
+      readonly itemId: string; readonly quantity: number; readonly name: string;
+      readonly category: string; readonly slot: string | null; readonly stackable: boolean;
+      readonly equippedSlot: string | null;
+    }[];
     readonly equipment: Readonly<Record<string, string>>;
   }[];
   readonly combat: {
@@ -56,6 +60,18 @@ export interface GameSnapshot {
     readonly worldEvents: readonly { readonly eventId: string; readonly outcome: "success" | "missed" }[];
     readonly dungeons: readonly { readonly dungeonId: string; readonly status: "entered" | "completed"; readonly encounter: number }[];
   }>>;
+  readonly shop: {
+    readonly townId: string;
+    readonly shops: readonly {
+      readonly id: string;
+      readonly name: string;
+      readonly inventory: readonly {
+        readonly itemId: string; readonly name: string; readonly category: string;
+        readonly slot: string | null; readonly stackable: boolean;
+        readonly buyPrice: number; readonly sellPrice: number;
+      }[];
+    }[];
+  } | null;
 }
 
 /** Authenticated resume: loads the authoritative DB snapshot for a session. */

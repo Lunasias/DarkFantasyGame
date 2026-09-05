@@ -266,11 +266,66 @@ describe.runIf(ENABLED)("Phase 11 persistence (real Neon)", () => {
       expect(snap.characters.length).toBe(2);
       const hostChar = (snap.characters as { characterId: string; inventory: { itemId: string; quantity: number }[]; effectiveStats: { maxHealth: number } }[])
         .find((c) => c.characterId === host.characterId);
-      expect(hostChar?.inventory).toContainEqual({ itemId: "grave_dust", quantity: 4 });
+      expect(hostChar?.inventory.find((i) => i.itemId === "grave_dust")?.quantity).toBe(4);
       expect(hostChar?.effectiveStats.maxHealth).toBe(100); // character base stats
       expect(snap.combat).not.toBeNull();
 
       await expect(getGameSnapshot(db, outsider.userId, sessionId)).rejects.toThrow();
+    }, 30000);
+  });
+
+  describe("Phase 25 inventory / equipment / shop (real Neon)", () => {
+    it("equips + unequips an owned item and rejects a wrong owner", async () => {
+      const owner = await createChar("eq_owner");
+      const other = await createChar("eq_other");
+      await persistInventorySet(db, { characterId: owner.characterId, itemId: "iron_longsword", quantity: 1, equippedSlot: null });
+      const svc = new GameplayService(db);
+
+      // Wrong owner cannot equip the owner's item.
+      await expect(svc.equipItem(other.userId, owner.characterId, "iron_longsword")).rejects.toThrow();
+
+      const equipRes = await svc.equipItem(owner.userId, owner.characterId, "iron_longsword");
+      expect(equipRes.slot).toBe("weapon");
+      const row = await db.select().from(characterInventory).where(and(
+        eq(characterInventory.characterId, owner.characterId), eq(characterInventory.itemId, "iron_longsword"))).limit(1);
+      expect(row[0]?.equippedSlot).toBe("weapon");
+
+      const uneq = await svc.unequipItem(owner.userId, owner.characterId, "weapon");
+      expect(uneq.itemId).toBe("iron_longsword");
+      const row2 = await db.select().from(characterInventory).where(and(
+        eq(characterInventory.characterId, owner.characterId), eq(characterInventory.itemId, "iron_longsword"))).limit(1);
+      expect(row2[0]?.equippedSlot).toBeNull();
+    }, 30000);
+
+    it("snapshot exposes enriched inventory metadata + shop at a shop town", async () => {
+      const host = await createChar("inv_host");
+      const guest = await createChar("inv_guest");
+      await db.insert(characterInventory).values({ id: createId(), characterId: host.characterId, itemId: "grave_dust", quantity: 2, equippedSlot: null });
+      await db.insert(characterInventory).values({ id: createId(), characterId: host.characterId, itemId: "iron_longsword", quantity: 1, equippedSlot: "weapon" });
+
+      const roomId = createId();
+      const sessionId = createId();
+      sessionIds.push(sessionId);
+      await db.insert(rooms).values({ id: roomId, roomCode: `I25${createId().slice(0, 4)}`, name: "I25", hostUserId: host.userId, status: "in_game", maxPlayers: 4 });
+      await db.insert(roomPlayers).values({ id: createId(), roomId, userId: host.userId, slot: 0, ready: true, isHost: true, connected: true });
+      await db.insert(roomPlayers).values({ id: createId(), roomId, userId: guest.userId, slot: 1, ready: true, isHost: false, connected: true });
+      await db.insert(gameSessions).values({ id: sessionId, roomId, phase: "active", currentTurnNumber: 1, stateVersion: 0 });
+      // Host at town node C (ashenfall has shop service).
+      await persistMove(db, { sessionId, characterId: host.characterId, nodeId: "C", turn: 1, stateVersion: 1 });
+
+      const snap = await getGameSnapshot(db, host.userId, sessionId);
+      const hostChar = snap.characters.find((c) => c.characterId === host.characterId);
+      const dust = hostChar?.inventory.find((i) => i.itemId === "grave_dust");
+      expect(dust?.quantity).toBe(2);
+      expect(dust?.name).toBe("Grave Dust");
+      expect(dust?.category).toBe("material");
+      const sword = hostChar?.inventory.find((i) => i.itemId === "iron_longsword");
+      expect(sword?.equippedSlot).toBe("weapon");
+      // Shop exposed at a shop-capable town (ashenfall has the seeded general store).
+      expect(snap.shop).not.toBeNull();
+      expect(snap.shop!.townId).toBe("ashenfall");
+      expect(snap.shop!.shops.length).toBeGreaterThan(0);
+      expect(snap.shop!.shops[0].inventory.map((i) => i.itemId)).toContain("grave_dust");
     }, 30000);
   });
 });

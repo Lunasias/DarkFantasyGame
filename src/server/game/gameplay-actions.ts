@@ -86,6 +86,66 @@ export async function useSkillAction(
   });
 }
 
+/** Buy from a shop using authoritative server pricing. */
+export async function buySessionAction(
+  sessionId: string,
+  characterId: string,
+  shopId: string,
+  itemId: string,
+  quantity: number,
+): Promise<ApiResult<unknown>> {
+  return runAction(async () => {
+    const user = await requireUser();
+    const db = await getDb();
+    const service = new GameplayService(db, getRealtimeTransport());
+    return service.buy(user.id, characterId, shopId, itemId, quantity);
+  });
+}
+
+/** Sell to a shop using authoritative server pricing. */
+export async function sellSessionAction(
+  sessionId: string,
+  characterId: string,
+  shopId: string,
+  itemId: string,
+  quantity: number,
+): Promise<ApiResult<unknown>> {
+  return runAction(async () => {
+    const user = await requireUser();
+    const db = await getDb();
+    const service = new GameplayService(db, getRealtimeTransport());
+    return service.sell(user.id, characterId, shopId, itemId, quantity);
+  });
+}
+
+/** Equip an owned item using its authoritative slot. */
+export async function equipItemSessionAction(
+  sessionId: string,
+  characterId: string,
+  itemId: string,
+): Promise<ApiResult<unknown>> {
+  return runAction(async () => {
+    const user = await requireUser();
+    const db = await getDb();
+    const service = new GameplayService(db, getRealtimeTransport());
+    return service.equipItem(user.id, characterId, itemId);
+  });
+}
+
+/** Unequip the item in the given slot. */
+export async function unequipItemSessionAction(
+  sessionId: string,
+  characterId: string,
+  slot: string,
+): Promise<ApiResult<unknown>> {
+  return runAction(async () => {
+    const user = await requireUser();
+    const db = await getDb();
+    const service = new GameplayService(db, getRealtimeTransport());
+    return service.unequipItem(user.id, characterId, slot);
+  });
+}
+
 async function run(userId: string, fn: (svc: GameplayService) => Promise<unknown>): Promise<ApiResult<unknown>> {
   const db = await getDb();
   return runAction(async () => fn(new GameplayService(db, getRealtimeTransport())));

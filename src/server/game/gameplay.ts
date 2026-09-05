@@ -25,7 +25,7 @@ import { createRng } from "../../game/engine/rng";
 import { createCharacter } from "../../game/engine/character";
 import { addExperience } from "../../game/progression";
 import { addGold, getGold } from "../../game/economy/gold";
-import { equip, getEquipped } from "../../game/items/equipment";
+import { getItem } from "../../game/items/items";
 import { createDefaultBoard, BoardEngine } from "../../game/board";
 import {
   acceptQuest,
@@ -372,19 +372,36 @@ export class GameplayService {
     return persistShopSell(this.db, { characterId, shopId, itemId, quantity });
   }
 
-  /** Equip an owned item (persists equipped slot). */
+  /** Equip an owned equippable item, using its authoritative slot (replacing any
+   *  previous occupant of that slot). Persists the equipped slot. */
   async equipItem(actorId: string, characterId: string, itemId: string) {
     const char = await this.assertCharacterOwner(actorId, characterId);
-    const c = createCharacter({ name: char.name, archetype: char.archetype,
-      stats: { maxHealth: char.maxHealth, health: char.health, attack: 10, defense: 5, speed: 8 } });
-    c.jobId = char.jobId; c.level = char.level; c.experience = char.experience; c.gold = char.gold;
+    const item = getItem(itemId);
+    if (!item) throw new AppError("INVALID_ACTION", "Unknown item");
+    if (item.category !== "equipment" || !item.slot) throw new AppError("INVALID_ACTION", "Item is not equippable");
+    const slot = item.slot;
     const [inv] = await this.db.select().from(characterInventory).where(and(
       eq(characterInventory.characterId, characterId), eq(characterInventory.itemId, itemId))).limit(1);
     if (!inv || inv.quantity < 1) throw new AppError("INVALID_ACTION", "Item not owned");
-    equip(c, itemId);
-    const slot = getEquipped(c, "weapon") ? "weapon" : null;
+    // Clear any previously-equipped occupant of this slot so no slot doubles up.
+    const [occupied] = await this.db.select().from(characterInventory).where(and(
+      eq(characterInventory.characterId, characterId), eq(characterInventory.equippedSlot, slot))).limit(1);
+    if (occupied && occupied.itemId !== itemId) {
+      await persistInventorySet(this.db, { characterId, itemId: occupied.itemId, quantity: occupied.quantity, equippedSlot: null });
+    }
+    void char;
     await persistInventorySet(this.db, { characterId, itemId, quantity: inv.quantity, equippedSlot: slot });
-    return { itemId, equippedSlot: slot };
+    return { itemId, slot };
+  }
+
+  /** Unequip the item in a slot (persists equipped slot as null). */
+  async unequipItem(actorId: string, characterId: string, slot: string) {
+    await this.assertCharacterOwner(actorId, characterId);
+    const [equipped] = await this.db.select().from(characterInventory).where(and(
+      eq(characterInventory.characterId, characterId), eq(characterInventory.equippedSlot, slot))).limit(1);
+    if (!equipped) throw new AppError("INVALID_ACTION", `Nothing equipped in slot "${slot}"`);
+    await persistInventorySet(this.db, { characterId, itemId: equipped.itemId, quantity: equipped.quantity, equippedSlot: null });
+    return { itemId: equipped.itemId, slot };
   }
 
   /** Grant authoritative EXP via progression, then persist. */
